@@ -1,0 +1,1 @@
+ random_offset = ti.Vector([ti.random(float) - 0.5, ti.random(float) - 0.5]) * 0.1
