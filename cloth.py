@@ -317,11 +317,3 @@ while window.running:
     window.show()
 
 
-
-
-
-
-#assets needed:
-# cloth
-# ball
-
