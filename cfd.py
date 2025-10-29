@@ -22,6 +22,8 @@ unit = 1/N
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
 density = ti.field(dtype=ti.f32, shape=(N,N)) # density field
+p = ti.field(dtype=ti.f32, shape=(N,N)) # density field
+div = ti.field(dtype=ti.f32, shape=(N,N)) # density field
 gravity = -9.8
 
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
@@ -48,12 +50,16 @@ def initialize_fields():
         u[i,j] = 1.5
         v[i, j] = 3
        
-        density[i, j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)
-        
+        density[i, j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)        
         ## duplicate for previous frame fields
         u_prev[i,j] = 1.5
         v_prev[i,j] = 3
         density_prev[i,j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)
+        
+@ti.kernel
+def set_p():
+    for I in ti.grouped(p):
+        p[I] = 0
         
         
 @ti.kernel
@@ -139,7 +145,7 @@ def force():
     # sampling vel from that x,y coordinate, interpolate
     # multiply by some diminishing fraction so doesn't blow up? * 0.95?
 @ti.kernel
-def advect(u, v, density, u_prev, v_prev, density_prev, N, dt):
+def advect():
     ##grab the vertical and horizontal vector from the previous frame
     for i, j in density:
 
@@ -216,20 +222,54 @@ def diffuse():
     copy_field(u_prev, u)
     copy_field(v_prev, v)
 
-
 ## PROJECT
-    # poisson solver?
+    ## NOTES:
+    # solve for divergence: div[x,y] = (-1/2N)*( (r - l ) + (u - d)
+    # iterate over pressure equation: p[i,j]= 1/4 * (div[i,j] + l + r + t + b)
+    # resolve pressure : u[i,j] -= 0.5 * N * (p[i+1, j] - p[i-1,j] , v[i,j] -= 0.5 * N * (p[i, j+1] - p[i,j-1]
     # gauss seidl
 
-## BOUNDARY CONDITIONS
-    ## create set bnd helper for setting boundary pixel values per stam
-    ##diffuse
+@ti.kernel
+def project():
+    set_p()
+    # compute divergence
+    for i, j in ti.ndrange((1,N-1),(1,N-1)):
+        div[i,j] = ((-1/2)*(1/N)) * ((u[i+1,j]-u[i-1,j]) + (v[i,j+1] - v[i,j-1]))
+
+        # at boundaries
+    set_density_bnd(div)
+
+    for k in range(20):
+        for i, j in density:
+            
+            ## don't calculate on boundaries
+            if( i == 0 or i == N-1 or j == 0 or j == N-1 ):
+                continue
+            ## compute pressure (0 placeholder for first iteration)
+            p[i,j] = (1/4) * (div[i,j] + p[i-1,j] + p[i+1,j] + p[i,j+1] + p[i,j-1])
+
+            #compute at boundaries
+        set_density_bnd(p)
+    
+    ## resolve pressure
+    for i, j in ti.ndrange((1,N-1),(1,N-1)):
+        #subtract horizontal and vertical pressure from velocity fields to resolve divergence
+        u[i,j] -= 0.5 * N * (p[i+1, j] - p[i-1,j]) 
+        v[i,j] -= 0.5 * N * (p[i, j+1] - p[i,j-1])
+
+    #boundaries
+    set_vel_bnd(u, v)
+
+
+
+
 
 ## TO DO:
 ## min_max helper function
 ## gauss_seidl helper function
 ## create random curl velocity in initial vel fields
 ## render logic
+## make sure everything in proper units
 
 
 
@@ -246,8 +286,11 @@ def diffuse():
 def main():
     
     initialize_fields()
-    force()
-    advect(u, v, density, u_prev, v_prev, density_prev, N)
+    while True:
+        force()
+        advect()
+        diffuse()
+        project()
 
 main()
 
