@@ -13,10 +13,12 @@ ti.init(arch=ti.cpu)
 N = 300 #field measurments
 unit = 1/N
 
+
 #w = vel
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
 density = ti.field(dtype=ti.f32, shape=(N,N)) # density field
+gravity = -9.8
 
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
 v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
@@ -55,18 +57,34 @@ def initialize_fields():
 ## TO DO: ti.kernels ##
 
 ## ADD FORCE
+    #NOTES:
     #w1(x) = w0(x) + delta T * f(x,t)
     #frame 2 vel = frame 1 vel + the force * time interval
 
+@ti.func
+def force():
+    for I in density:
+        ## adding gravity force * units per timestep to vertical velocity
+        v[I] = v[I] + gravity * unit *dt
+    
+    
+
 ## ADVECT
+    #NOTES:
+    #particle path =  p(x, s)
+    #w1(x) = w0(p(x0, -dt))
+    #basically frame 2 particle vel = tracing vel of particle backwards to previous time step, 
+    # sampling vel from that x,y coordinate, interpolate
+    # multiply by some diminishing fraction so doesn't blow up? * 0.95?
+
 @ti.func
 def advect(u, v, density, u_prev, v_prev, density_prev, N, dt):
     ##grab the vertical and horizontal vector from the previous frame
     for i, j in density:
 
-        ## units per timestep
-        u_path = u_prev[i,j] * dt
-        v_path = v_prev[i,j] * dt
+        ## velocity path at this point in units per timestep
+        u_path = u_prev[i,j] * dt * unit
+        v_path = v_prev[i,j] * dt * unit
         
         ## subtracting vel from current position to get where it was in previous position
         x_old = i - u_path
@@ -105,14 +123,6 @@ def advect(u, v, density, u_prev, v_prev, density_prev, N, dt):
         v[i,j] = (1-s_x)*(1-s_y)*bl_v + (s_x*(1-s_y)*br_v) + s_x*s_y*tr_v + (1-s_x)*s_y*tl_v
        
 
-
-
-
-#particle path =  p(x, s)
-#w1(x) = w0(p(x0, -dt))
-#basically frame 2 particle vel = tracing vel of particle backwards to previous time step, 
-# sampling vel from that x,y coordinate, interpolate
-# multiply by some diminishing fraction so doesn't blow up? * 0.95?
 
 @ti.kernel
 def main():
