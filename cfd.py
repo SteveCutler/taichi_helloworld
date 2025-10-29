@@ -56,10 +56,61 @@ def initialize_fields():
         density_prev[i,j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)
         
         
-@ti.Kernel
+@ti.kernel
 def copy_field(field1: ti.template(), field2: ti.template()):
     for I in ti.grouped(field1):
         field1[I] = field2[I]
+
+
+@ti.kernel
+def set_density_bnd(field):
+    N_ = N-1
+    ##set left right wall
+    for j in range(1,N_):
+        field[0,j] = field[1,j]
+        field[N_,j] = field[N_-1, j]
+    ## set top and bottom wall
+    for i in range(1,N_):
+        field[i,0] = field[i,1]
+        field[i,N_] = field[i,N_-1]
+
+    ##set corners - average adjacent sides
+    field[0,0] = 0.5 * (field[0,1] + field[1,0]) ## top left
+    field[0,N_] = 0.5 * (field[0,N_-1] + field[1,N_]) ## bottom left
+    field[N_,N_] = 0.5 * (field[N_,N_-1] + field[N_-1,N_]) ## bottom right
+    field[N_,0] = 0.5 * (field[N_-1,0] + field[N_,1]) ## top right
+
+@ti.kernel
+def set_vel_bnd(u_field: ti.template(), v_field: ti.template()):
+    N_ = N-1
+
+    ## for horizontal flip the vel, for vertical grab tangential
+
+    ##set left right wall
+    for j in range(1,N_):
+        u_field[0,j] = -u_field[1,j]
+        u_field[N_,j] = -u_field[N_-1, j]
+        v_field[0,j] = v_field[1,j]
+        v_field[N_,j] = v_field[N_-1, j]
+        
+    ## set top and bottom wall
+    for i in range(1,N_):
+        u_field[i,0] = u_field[i,1]
+        u_field[i,N_] = u_field[i,N_-1]
+        v_field[i,0] = -v_field[i,1]
+        v_field[i,N_] = -v_field[i,N_-1]
+
+    ##set corners - average adjacent sides
+    u_field[0,0] = 0.5 * (u_field[0,1] + u_field[1,0]) ## top left
+    u_field[0,N_] = 0.5 * (u_field[0,N_-1] + u_field[1,N_]) ## bottom left
+    u_field[N_,N_] = 0.5 * (u_field[N_,N_-1] + u_field[N_-1,N_]) ## bottom right
+    u_field[N_,0] = 0.5 * (u_field[N_-1,0] + u_field[N_,1]) ## top right
+    v_field[0,0] = 0.5 * (v_field[0,1] + v_field[1,0]) ## top left
+    v_field[0,N_] = 0.5 * (v_field[0,N_-1] + v_field[1,N_]) ## bottom left
+    v_field[N_,N_] = 0.5 * (v_field[N_,N_-1] + v_field[N_-1,N_]) ## bottom right
+    v_field[N_,0] = 0.5 * (v_field[N_-1,0] + v_field[N_,1]) ## top right
+
+
 
 
 ###########
@@ -143,20 +194,27 @@ def advect(u, v, density, u_prev, v_prev, density_prev, N, dt):
     # calculate diffusion by averaging velocity/density for a given cell between the 4 or 8 neighbours, 
     # note: use the new values for the current iteration when available (the cells that came before)
 
-    @ti.kernel
-    def diffuse():
-        ##Diffuse using gauss seidl, 20 iterations
+@ti.kernel
+def diffuse():
 
-        for i in range(20):
-            for i, j in density:
-                ## don't diffuse on boundaries
-                if( i == 0 or i == N-1 or j == 0 or j == N-1 ):
-                    continue
-                density[i,j] = density_prev[i,j] + (diff*(density[i-1,j]+density[i,j-1]+ density_prev[i+1,j] + density_prev[i,j+1]))/(1+4*diff)
+    ##diffusion co-efficient
+    a = dt * diff * N * N
 
-            copy_field(density_prev, density)
-            
-            ##enforce boundaries constraints with set_bnd
+    for k in range(20):
+        for i, j in density:
+            ## don't diffuse on boundaries
+            if( i == 0 or i == N-1 or j == 0 or j == N-1 ):
+                continue
+            density[i,j] = density_prev[i,j] + (a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a)
+            u[i,j] = u_prev[i,j] + (a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
+            v[i,j] = v_prev[i,j] + (a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
+        
+        set_density_bnd(density)
+        set_vel_bnd(u,v)
+
+    copy_field(density_prev, density)
+    copy_field(u_prev, u)
+    copy_field(v_prev, v)
 
 
 ## PROJECT
@@ -170,12 +228,18 @@ def advect(u, v, density, u_prev, v_prev, density_prev, N, dt):
 ## TO DO:
 ## min_max helper function
 ## gauss_seidl helper function
-## set_bnd function
 ## create random curl velocity in initial vel fields
 ## render logic
 
 
 
+
+
+
+
+###########
+## RENDER
+###########
 
 
 @ti.kernel
@@ -186,9 +250,6 @@ def main():
     advect(u, v, density, u_prev, v_prev, density_prev, N)
 
 main()
-
-#### RENDER ######
-
 
 ## Display logic
 
