@@ -29,8 +29,8 @@ gravity = -9.8
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
 v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
 density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
-
-dt = 1/100 #timestep
+decay = 0.995
+dt = 0.01 #timestep
 
 diff = 0.0001 #diffusion coefficient
 
@@ -83,7 +83,7 @@ def set_p():
         
 @ti.kernel
 def add_source(x: int,y: int):
-    r = N//15
+    r = int(N*0.02)
     
 
     for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
@@ -92,8 +92,8 @@ def add_source(x: int,y: int):
         ##print("dist = ",1-dist/r)
         
         density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
-        u[i, j] =  (vel[0]*N)*(1-dist/r)*5
-        v[i, j] =  (vel[1]*N)*(1-dist/r)*5
+        u[i, j] =  (vel[0]*N)*(1-dist/r)*10
+        v[i, j] =  (vel[1]*N)*(1-dist/r)*10
     
 
 @ti.kernel
@@ -264,7 +264,7 @@ def diffuse():
     for k in range(20):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a)
+            density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a) * decay
             u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
             v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
         
@@ -340,7 +340,15 @@ def project():
 def substep():
     ##force() # gravity
     ##copy_field(v_prev, v)
-
+    if window.is_pressed(ti.ui.LMB):
+        x,y = window.get_cursor_pos()
+        x = int(x*N)
+        y = int(y*N)
+        add_source(x,y)
+        copy_field(density_prev, density)
+        copy_field(u_prev, u)
+        copy_field(v_prev, v)
+        print("click detected")
     advect()
     copy_field(v_prev, v)
     copy_field(u_prev, u)
@@ -382,15 +390,7 @@ copy_field(v_prev, v)
 ##Render loop
 while window.running:
 
-    if window.is_pressed(ti.ui.LMB):
-        x,y = window.get_cursor_pos()
-        x = int(x*N)
-        y = int(y*N)
-        add_source(x,y)
-        copy_field(density_prev, density)
-        copy_field(u_prev, u)
-        copy_field(v_prev, v)
-        print("click detected")
+
 
     window.show()
     # reset every 1.5 seconds
