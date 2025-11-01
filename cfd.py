@@ -81,7 +81,21 @@ def set_p():
     for I in ti.grouped(p):
         p[I] = 0
         
+@ti.kernel
+def add_source(x: int,y: int):
+    r = N//15
+    
+
+    for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
+        dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
+        vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
+        ##print("dist = ",1-dist/r)
         
+        density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
+        u[i, j] =  (vel[0]*N)*(1-dist/r)*5
+        v[i, j] =  (vel[1]*N)*(1-dist/r)*5
+    
+
 @ti.kernel
 def copy_field(field1: ti.template(), field2: ti.template()):
     for I in ti.grouped(field1):
@@ -237,7 +251,6 @@ def advect():
     ## NOTES: use gauss seidl relaxation, 20 iteration
     # w1(x,y) = w0(x,y) + a( w1(x-1,y) + w1(x+1,y) + w1(x,y-1) + w1(x,y+1)) / 1 + 4a
     #where a = diffusion coeff
-
     # gauss seidl interpolation, 20 iterations
     # calculate diffusion by averaging velocity/density for a given cell between the 4 or 8 neighbours, 
     # note: use the new values for the current iteration when available (the cells that came before)
@@ -327,6 +340,7 @@ def project():
 def substep():
     ##force() # gravity
     ##copy_field(v_prev, v)
+
     advect()
     copy_field(v_prev, v)
     copy_field(u_prev, u)
@@ -341,7 +355,7 @@ def substep():
     copy_field(v_prev, v)
     copy_field(u_prev, u)
     copy_field(density_prev, density)
-    #clamp_values(density)
+    ##clamp_values(density)
 
 
 
@@ -359,6 +373,7 @@ canvas.set_background_color((0,0,1))
 current_t = 0.0
 substeps = 5
 
+##Initialize fields
 initialize_fields()
 copy_field(density_prev, density)
 copy_field(u_prev, u)
@@ -366,6 +381,16 @@ copy_field(v_prev, v)
 
 ##Render loop
 while window.running:
+
+    if window.is_pressed(ti.ui.LMB):
+        x,y = window.get_cursor_pos()
+        x = int(x*N)
+        y = int(y*N)
+        add_source(x,y)
+        copy_field(density_prev, density)
+        copy_field(u_prev, u)
+        copy_field(v_prev, v)
+        print("click detected")
 
     window.show()
     # reset every 1.5 seconds
