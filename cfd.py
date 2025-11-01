@@ -30,9 +30,9 @@ u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
 v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
 density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
 
-dt = 1/48 #timestep
+dt = 1/100 #timestep
 
-diff = 0.0001 #diffusion coefficient
+diff = 0.00001 #diffusion coefficient
 
 ## potential to add viscosity here
 
@@ -56,7 +56,7 @@ def initialize_fields():
         v_prev[i,j] = 3
         density_prev[i,j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)
         
-@ti.kernel
+@ti.func
 def set_p():
     for I in ti.grouped(p):
         p[I] = 0
@@ -68,7 +68,7 @@ def copy_field(field1: ti.template(), field2: ti.template()):
         field1[I] = field2[I]
 
 
-@ti.kernel
+@ti.func
 def set_density_bnd(field: ti.template()):
     N_ = N-1
     ##set left right wall
@@ -86,7 +86,7 @@ def set_density_bnd(field: ti.template()):
     field[N_,N_] = 0.5 * (field[N_,N_-1] + field[N_-1,N_]) ## bottom right
     field[N_,0] = 0.5 * (field[N_-1,0] + field[N_,1]) ## top right
 
-@ti.kernel
+@ti.func
 def set_vel_bnd(u_field: ti.template(), v_field: ti.template()):
     N_ = N-1
 
@@ -119,7 +119,7 @@ def set_vel_bnd(u_field: ti.template(), v_field: ti.template()):
 ##clamp
 @ti.func
 def clamp(value, min, max):
-    return ti.max(min, ti.min(int(ti.floor(value)), max))
+    return ti.max(min, ti.min(int(ti.floor(float(value))), max))
 
 
 ##bilinear interpolation
@@ -151,10 +151,10 @@ def get_value(field, x_l, x_r, y_b, y_t, s_x, s_y):
     #frame 2 vel = frame 1 vel + the force * time interval
 @ti.kernel
 def force():
-    for I in density:
+    for I in ti.grouped(density):
         ## adding gravity force * units per timestep to vertical velocity
+      ##  print(v[I]," + ", gravity*unit*dt, )
         v[I] = v[I] + gravity * unit *dt
-        copy_field(v_prev, v)
     
     
 
@@ -168,7 +168,7 @@ def force():
 @ti.kernel
 def advect():
     ##grab the vertical and horizontal vector from the previous frame
-    for i, j in ti.ndrange(1,N-1):
+    for i, j in ti.ndrange((1,N-1), (1,N-1)):
 
         ## velocity path at this point in units per timestep
         u_path = u_prev[i,j] * dt * unit
@@ -179,10 +179,10 @@ def advect():
         y_old = j - v_path
 
         ## calculate corners with boundary enforcement
-        x_l = clamp(x_old, 0.5, N-1.5)
-        x_r = clamp(x_l+1, 0.5, N-1.5)
-        y_b = clamp(y_old, 0.5, N-1.5)
-        y_t = clamp(y_b+1, 0.5, N-1.5)
+        x_l = clamp(x_old, 0, N-1)
+        x_r = clamp(x_l+1, 0, N-1)
+        y_b = clamp(y_old, 0, N-1)
+        y_t = clamp(y_b+1, 0, N-1)
         
         # determine where in cell source is
         s_x = x_old - x_l
@@ -194,12 +194,8 @@ def advect():
         v[i,j] = get_value(v_prev, x_l, x_r, y_b, y_t, s_x, s_y)
        
 
-    set_density_bnd()
+    set_density_bnd(density)
     set_vel_bnd(u, v)
-    
-    copy_field(u_prev, u)
-    copy_field(v_prev, v)
-    copy_field(density_prev, density)
     
 
 
@@ -219,10 +215,8 @@ def diffuse():
     a = dt * diff * N * N
 
     for k in range(20):
-        for i, j in density:
+        for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            if( i == 0 or i == N-1 or j == 0 or j == N-1 ):
-                continue
             density[i,j] = density_prev[i,j] + (a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a)
             u[i,j] = u_prev[i,j] + (a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
             v[i,j] = v_prev[i,j] + (a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
@@ -230,9 +224,6 @@ def diffuse():
         set_density_bnd(density)
         set_vel_bnd(u,v)
 
-    copy_field(density_prev, density)
-    copy_field(u_prev, u)
-    copy_field(v_prev, v)
 
 ## PROJECT
     ## NOTES:
@@ -271,9 +262,6 @@ def project():
     #boundaries
     set_vel_bnd(u, v)
 
-    copy_field(u_prev, u)
-    copy_field(v_prev, v)
-    copy_field(density_prev, density)
 
 
 
@@ -299,12 +287,23 @@ def project():
 ###########
 
 
-@ti.kernel
+
 def substep():
     force()
+    copy_field(v_prev, v)
     advect()
+    copy_field(u_prev, u)
+    copy_field(v_prev, v)
+    copy_field(density_prev, density)
     diffuse()
+    copy_field(density_prev, density)
+    copy_field(u_prev, u)
+    copy_field(v_prev, v)
     project()
+    copy_field(u_prev, u)
+    copy_field(v_prev, v)
+    copy_field(density_prev, density)
+
 
 
 ## Display logic
@@ -312,52 +311,27 @@ def substep():
 window = ti.ui.Window("Stable Fluids - Steve Cutler", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 #set to white
-canvas.set_background_color((1,1,1))
+##canvas.set_background_color((1,1,1))
 #create scene and camera
 ##scene = window.get_scene()
-camera = ti.ui.Camera()
+##camera = ti.ui.Camera()
 ## start time
 current_t = 0.0
 
+initialize_fields()
+
 ##Render loop
 while window.running:
-    initialize_fields()
-    current_t += dt
-    canvas.scene(scene)
+
     window.show()
-    reset every 1.5 seconds
-    #if current_t > 2.5:
+    # reset every 1.5 seconds
+    if current_t > 2.5:
         initialize_fields()
         current_t=0
         
     # calculate all substeps and then update vertices
-    for i in range(substeps):  
-        substep()
-        current_t += dt    
-    update_vertices()
-
-    camera.position(0,0,3)
-    camera.lookat(0,0,0)
-    scene.set_camera(camera)
-
-    scene.point_light(pos=(0,1,2), color=(1,1,1))
-    scene.ambient_light((0.5,0.5,0.5))
-    scene.mesh(vertices,
-               indices,
-               per_vertex_color=colors,
-               two_sided=True)
-    
-     # Draw a smaller ball to avoid visual penetration
-    
-    ##scene.particles(ball_center, radius=ball_radius*0.9, color=(0.5, 0.42, 0.8))
-
-    #test with sphere mesh:
-    update_sphere_vertices(ball_center[0], ball_radius)
-    scene.mesh(
-        sphere_vertices,
-        sphere_indices,
-        color=(0.5, 0.42, 0.8),
-        two_sided=True,
-    )
+    substep()
+    current_t += dt    
+    canvas.set_image(density)
 
 
