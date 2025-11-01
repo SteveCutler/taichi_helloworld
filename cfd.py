@@ -32,7 +32,7 @@ density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
 
 dt = 1/100 #timestep
 
-diff = 0.00001 #diffusion coefficient
+diff = 0.0001 #diffusion coefficient
 
 ## potential to add viscosity here
 
@@ -45,16 +45,36 @@ diff = 0.00001 #diffusion coefficient
 def initialize_fields():
     
     for i,j in density:
+        #define center
+        cx, cy =N/2, N/2
         
         ## initialize fields
-        u[i,j] = 1.5
-        v[i, j] = 3
-       
-        density[i, j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)        
-        ## duplicate for previous frame fields
-        u_prev[i,j] = 1.5
-        v_prev[i,j] = 3
-        density_prev[i,j] = ti.sin(i/N*1.0) * ti.cos(j/N*1.0)
+        # simple stream function: like ripples or noise
+        psi = ti.sin(0.10 * i) * ti.cos(0.10 * j)
+
+        # finite differences to compute partial derivatives
+        dpsi_dx = (ti.sin(0.10 * (i + 0.10/N)) * ti.cos(0.10 * j) - psi) * N
+        dpsi_dy = (ti.sin(0.10 * i) * ti.cos(0.10 * (j + 1/N)) - psi) * N
+
+        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*60
+        # curl = (∂ψ/∂y, -∂ψ/∂x)
+        # u[i, j] =  dpsi_dy/unit*10 
+        # v[i, j] = -dpsi_dx/unit*10
+        u[i, j] =  dpsi_dy/unit*50 + outward_force[0]
+        v[i, j] = -dpsi_dx/unit*50 + outward_force[1]
+        #u[i, j] =  outward_force[0]
+        #v[i, j] =  outward_force[1]
+
+
+        #u[i,j] = 10/unit
+        #v[i, j] = 10/unit
+
+        ##circle in center
+        r = N//5
+        dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
+        if dist < r:
+            density[i, j] = clamp(1 * (1-dist/r),0.0,1.0)
+
         
 @ti.func
 def set_p():
@@ -69,7 +89,7 @@ def copy_field(field1: ti.template(), field2: ti.template()):
 
 
 @ti.func
-def set_density_bnd(field: ti.template()):
+def set_bnd(field: ti.template()):
     N_ = N-1
     ##set left right wall
     for j in range(1,N_):
@@ -119,7 +139,7 @@ def set_vel_bnd(u_field: ti.template(), v_field: ti.template()):
 ##clamp
 @ti.func
 def clamp(value, min, max):
-    return ti.max(min, ti.min(int(ti.floor(float(value))), max))
+    return ti.max( min, ti.min( float(value), max ) )
 
 
 ##bilinear interpolation
@@ -132,6 +152,7 @@ def bilerp(bl, br, tr, tl, s_x, s_y):
 @ti.func
 def get_value(field, x_l, x_r, y_b, y_t, s_x, s_y):
     ## corner samples
+   
     bl_d = field[x_l,y_b]
     br_d = field[x_r,y_b]
     tl_d = field[x_l,y_t]
@@ -139,6 +160,18 @@ def get_value(field, x_l, x_r, y_b, y_t, s_x, s_y):
 
     return bilerp(bl_d, br_d, tr_d, tl_d, s_x, s_y)
     
+@ti.kernel
+def clamp_values(field: ti.template()):
+    for I in ti.grouped(field):
+       
+        field[I] = clamp(field[I],0.0,1.0)
+       
+
+
+
+
+
+
 ###########
 ## FORCES 
 ###########
@@ -154,7 +187,7 @@ def force():
     for I in ti.grouped(density):
         ## adding gravity force * units per timestep to vertical velocity
       ##  print(v[I]," + ", gravity*unit*dt, )
-        v[I] = v[I] + gravity * unit *dt
+        v[I] = v[I] + gravity * unit
     
     
 
@@ -171,7 +204,7 @@ def advect():
     for i, j in ti.ndrange((1,N-1), (1,N-1)):
 
         ## velocity path at this point in units per timestep
-        u_path = u_prev[i,j] * dt * unit
+        u_path = u_prev[i,j] * dt *unit
         v_path = v_prev[i,j] * dt * unit
         
         ## subtracting vel from current position to get where it was in previous position
@@ -179,10 +212,11 @@ def advect():
         y_old = j - v_path
 
         ## calculate corners with boundary enforcement
-        x_l = clamp(x_old, 0, N-1)
-        x_r = clamp(x_l+1, 0, N-1)
-        y_b = clamp(y_old, 0, N-1)
-        y_t = clamp(y_b+1, 0, N-1)
+        x_l = int(ti.floor(clamp(x_old, 1, N-1)))
+        x_r = int(ti.ceil(clamp(x_l+1, 1, N-1)))
+        y_b = int(ti.floor(clamp(y_old, 1, N-1)))
+        y_t = int(ti.ceil(clamp(y_b+1, 1, N-1)))
+        
         
         # determine where in cell source is
         s_x = x_old - x_l
@@ -194,7 +228,7 @@ def advect():
         v[i,j] = get_value(v_prev, x_l, x_r, y_b, y_t, s_x, s_y)
        
 
-    set_density_bnd(density)
+    set_bnd(density)
     set_vel_bnd(u, v)
     
 
@@ -217,11 +251,11 @@ def diffuse():
     for k in range(20):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            density[i,j] = density_prev[i,j] + (a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a)
-            u[i,j] = u_prev[i,j] + (a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
-            v[i,j] = v_prev[i,j] + (a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
+            density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a)
+            u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
+            v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
         
-        set_density_bnd(density)
+        set_bnd(density)
         set_vel_bnd(u,v)
 
 
@@ -237,10 +271,12 @@ def project():
     set_p()
     # compute divergence
     for i, j in ti.ndrange((1,N-1),(1,N-1)):
-        div[i,j] = ((-1/2)*(1/N)) * ((u[i+1,j]-u[i-1,j]) + (v[i,j+1] - v[i,j-1]))
+        div[i,j] = ((-0.5)) * ((u[i+1,j]-u[i-1,j]) + (v[i,j+1] - v[i,j-1]))
 
         # at boundaries
-    set_density_bnd(div)
+    set_bnd(div)
+   
+
 
     for k in range(20):
         ## don't calculate on boundaries
@@ -251,13 +287,13 @@ def project():
             p[i,j] = (1/4) * (div[i,j] + p[i-1,j] + p[i+1,j] + p[i,j+1] + p[i,j-1])
 
             #compute boundaries
-        set_density_bnd(p)
+        set_bnd(p)
     
     ## resolve pressure
     for i, j in ti.ndrange((1,N-1),(1,N-1)):
         #subtract horizontal and vertical pressure from velocity fields to resolve divergence
-        u[i,j] -= 0.5 * N * (p[i+1, j] - p[i-1,j]) 
-        v[i,j] -= 0.5 * N * (p[i, j+1] - p[i,j-1])
+        u[i,j] -= 0.5 * (p[i+1, j] - p[i-1,j])*unit
+        v[i,j] -= 0.5 * (p[i, j+1] - p[i,j-1])*unit
 
     #boundaries
     set_vel_bnd(u, v)
@@ -289,20 +325,24 @@ def project():
 
 
 def substep():
-    force()
-    copy_field(v_prev, v)
+    ##force() # gravity
+    ##copy_field(v_prev, v)
     advect()
-    copy_field(u_prev, u)
     copy_field(v_prev, v)
+    copy_field(u_prev, u)
     copy_field(density_prev, density)
+
     diffuse()
-    copy_field(density_prev, density)
-    copy_field(u_prev, u)
     copy_field(v_prev, v)
+    copy_field(u_prev, u)
+   
+    
     project()
-    copy_field(u_prev, u)
     copy_field(v_prev, v)
+    copy_field(u_prev, u)
     copy_field(density_prev, density)
+    #clamp_values(density)
+
 
 
 
@@ -311,26 +351,31 @@ def substep():
 window = ti.ui.Window("Stable Fluids - Steve Cutler", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 #set to white
-##canvas.set_background_color((1,1,1))
+canvas.set_background_color((0,0,1))
 #create scene and camera
 ##scene = window.get_scene()
 ##camera = ti.ui.Camera()
 ## start time
 current_t = 0.0
+substeps = 5
 
 initialize_fields()
+copy_field(density_prev, density)
+copy_field(u_prev, u)
+copy_field(v_prev, v)  
 
 ##Render loop
 while window.running:
 
     window.show()
     # reset every 1.5 seconds
-    if current_t > 2.5:
-        initialize_fields()
-        current_t=0
+    # if current_t > 2.5:
+    #     initialize_fields()
+    #     current_t=0
         
     # calculate all substeps and then update vertices
-    substep()
+    for _ in range(substeps):
+        substep()
     current_t += dt    
     canvas.set_image(density)
 
