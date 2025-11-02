@@ -397,6 +397,18 @@ def substep():
 
 ## Display logic
 
+img = ti.Vector.field(3, dtype=ti.f32, shape=(N,N))
+
+@ti.kernel
+def make_display_image():
+    for i, j in density:
+        d = ti.min(density[i, j], 1.0)           # clamp high values
+        d = ti.sqrt(ti.max(d, 0.0))              # gamma-like contrast
+        img[i, j][0] = d * 0.9                   # red channel
+        img[i, j][1] = d * 0.6 + 0.1             # green channel
+        img[i, j][2] = 1.0 - d * 0.8             # blue channel
+
+
 window = ti.ui.Window("Stable Fluids - Steve Cutler", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 #set to white
@@ -428,7 +440,8 @@ while window.running:
     # calculate all substeps and then update vertices
     for _ in range(substeps):
         substep()
+    make_display_image()
     current_t += dt    
-    canvas.set_image(density)
+    canvas.set_image(img)
 
 
