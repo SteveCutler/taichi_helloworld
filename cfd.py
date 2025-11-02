@@ -16,23 +16,25 @@ ti.init(arch=ti.cpu)
 
 N = 300 #field measurments
 unit = 1/N
+gravity = -9.8
+decay = 0.999 # decay rate
+dt = 0.01 #timestep
+diff = 0.00005 #diffusion coefficient
+curl_co = 10 #vortex coefficient
 
-
-#w = vel
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
 density = ti.field(dtype=ti.f32, shape=(N,N)) # density field
-p = ti.field(dtype=ti.f32, shape=(N,N)) # density field
-div = ti.field(dtype=ti.f32, shape=(N,N)) # density field
-gravity = -9.8
+p = ti.field(dtype=ti.f32, shape=(N,N)) # pressure field
+div = ti.field(dtype=ti.f32, shape=(N,N)) # divergence field
+curl = ti.field(dtype=ti.f32, shape=(N,N)) # curl field
+
+
 
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
 v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
 density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
-decay = 0.995
-dt = 0.01 #timestep
 
-diff = 0.0001 #diffusion coefficient
 
 ## potential to add viscosity here
 
@@ -56,7 +58,7 @@ def initialize_fields():
         dpsi_dx = (ti.sin(0.10 * (i + 0.10/N)) * ti.cos(0.10 * j) - psi) * N
         dpsi_dy = (ti.sin(0.10 * i) * ti.cos(0.10 * (j + 1/N)) - psi) * N
 
-        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*60
+        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*20
         # curl = (∂ψ/∂y, -∂ψ/∂x)
         # u[i, j] =  dpsi_dy/unit*10 
         # v[i, j] = -dpsi_dx/unit*10
@@ -64,10 +66,6 @@ def initialize_fields():
         v[i, j] = -dpsi_dx/unit*50 + outward_force[1]
         #u[i, j] =  outward_force[0]
         #v[i, j] =  outward_force[1]
-
-
-        #u[i,j] = 10/unit
-        #v[i, j] = 10/unit
 
         ##circle in center
         r = N//5
@@ -311,7 +309,31 @@ def project():
     #boundaries
     set_vel_bnd(u, v)
 
+## VORTEX CONFINEMENT
+    ##Notes: partial v/partial x - partial u/partial y
+    ## how does vertical vel change as we x increases, and vice versa
 
+@ti.kernel
+def compute_curl():
+    for i,j in ti.ndrange((1,N-1),(1,N-1)):
+        curl[i,j] = 0.5*(v[i+1,j] - v[i-1,j]) - 0.5*(u[i,j+1]-u[i,j-1])
+    set_bnd(curl)
+
+
+@ti.kernel
+def compute_vortex_force():
+    for i,j in ti.ndrange((1,N-1),(1,N-1)):
+        grad_x = 0.5*(ti.abs(curl[i+1,j]) - ti.abs(curl[i-1,j]))
+        grad_y = 0.5*(ti.abs(curl[i,j+1]) - ti.abs(curl[i,j-1]))
+        mag = ti.Vector([grad_x,grad_y]).norm() + 1e-5 ## adding tiny amount to avoid dividing by 0
+        Nx, Ny = grad_x/mag, grad_y/mag
+        u[i,j] = u[i,j] + Ny * curl[i,j] * dt * curl_co
+        v[i,j] = v[i,j] - Nx * curl[i,j] * dt * curl_co
+    set_vel_bnd(u,v)
+
+
+       
+        
 
 
 
@@ -358,6 +380,11 @@ def substep():
     copy_field(v_prev, v)
     copy_field(u_prev, u)
    
+    compute_curl()
+    compute_vortex_force()
+    copy_field(v_prev, v)
+    copy_field(u_prev, u)
+
     
     project()
     copy_field(v_prev, v)
@@ -373,7 +400,7 @@ def substep():
 window = ti.ui.Window("Stable Fluids - Steve Cutler", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 #set to white
-canvas.set_background_color((0,0,1))
+canvas.set_background_color((0,0,0))
 #create scene and camera
 ##scene = window.get_scene()
 ##camera = ti.ui.Camera()
