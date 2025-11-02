@@ -4,6 +4,9 @@
 
 ## w0(x) -> add force -> w1(x) -> advect ->  w2(x) -> diffuse -> w3(x) -> project -> w4(x)
 
+## make random splash function thats different for each iteration - random number gen
+## add noise to source add function
+## make diffusion milky?
 
 import taichi as ti
 
@@ -19,11 +22,13 @@ unit = 1/N
 gravity = -9.8
 decay = 0.999 # decay rate
 dt = 0.05 #timestep
-diff = 0.00001 #diffusion coefficient
-curl_co = 5 #vortex coefficient
+diff = 0.000001 #diffusion coefficient
+curl_co = 10 #vortex coefficient
 iterations = 4
-substeps = 2
-out_force = 5
+substeps = 1
+out_force = 25
+source_r = 0.02
+source_vel = 100
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
@@ -53,29 +58,17 @@ def initialize_fields():
     for i,j in density:
         #define center
         cx, cy =N/2, N/2
-        
-        ## initialize fields
-        # simple stream function: like ripples or noise
-        psi = ti.sin(0.10 * i) * ti.cos(0.10 * j)
-
-        # finite differences to compute partial derivatives
-        dpsi_dx = (ti.sin(0.10 * (i + 0.10/N)) * ti.cos(0.10 * j) - psi) * N
-        dpsi_dy = (ti.sin(0.10 * i) * ti.cos(0.10 * (j + 1/N)) - psi) * N
-
         outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force
-        # curl = (∂ψ/∂y, -∂ψ/∂x)
-        # u[i, j] =  dpsi_dy/unit*10 
-        # v[i, j] = -dpsi_dx/unit*10
-        u[i, j] =  dpsi_dy/unit*50 + outward_force[0]
-        v[i, j] = -dpsi_dx/unit*50 + outward_force[1]
-        #u[i, j] =  outward_force[0]
-        #v[i, j] =  outward_force[1]
+
+
 
         ##circle in center
         r = N//5
         dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
         if dist < r:
             density[i, j] = clamp(1 * (1-dist/r),0.0,1.0)
+            u[i, j] = outward_force[0]
+            v[i, j] = outward_force[1]
 
         
 @ti.func
@@ -86,26 +79,30 @@ def set_p():
 @ti.kernel
 def add_source(x: int, y: int, vx: int, vy: int):
     print("add source")
-    r = int(N*0.02)
+    r = int(N*source_r)
+    
+    for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):      
+        dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
 
-    if vx == 0 and vy == 0:
-        for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
-            dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
-            vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
-            ##print("dist = ",1-dist/r)
+
+        if dist < r:
+            falloff = 1.0 - dist / r
+            w = falloff * falloff  # smooth falloff
+            vel = (ti.Vector([i,j]) - ti.Vector([x,y])) 
+
             
-            density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
-            u[i, j] =  (vel[0]*N)*(1-dist/r)*10
-            v[i, j] =  (vel[1]*N)*(1-dist/r)*10
-    else:
-        for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
-            dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
-            vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
-            ##print("dist = ",1-dist/r)
-            
-            density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
-            u[i, j] =  (vel[0]*N)*clamp((1-dist/r),0.0,1.0)*10 + vx*100
-            v[i, j] =  (vel[1]*N)*clamp((1-dist/r),0.0,1.0)*10 + vy*100
+            perp = ti.Vector([-vel[1], vel[0]])  # perpendicular swirl
+            mix = ti.random(ti.f32) * -0.1  # ±30% swirl mix
+            noisy_dir = (vel + perp) * mix
+        
+            # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
+            density[i, j] = density[i,j] + clamp(w,0,1)
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N + vx)*clamp(w,0,1) + noisy_dir[0]*50
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N + vy)*clamp(w,0,1) + noisy_dir[1]*50
+
+            density_prev[i,j] = density[i,j]
+            u_prev[i,j] = u[i,j]
+            v_prev[i,j] = v[i,j]
     
 
 @ti.kernel
@@ -409,6 +406,9 @@ def substep():
 
     ## PROJECT
     project()
+    v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
+    density_prev, density = density, density_prev
 
     ##ti.profiler.print_kernel_profiler_info()
 
@@ -458,6 +458,11 @@ while window.running:
     #     initialize_fields()
     #     current_t=0
         
+
+    # calculate all substeps and then update vertices
+    for _ in range(substeps):
+        substep()
+
             ## CHECK FOR MOUSE CLICKS
     if window.is_pressed(ti.ui.LMB):
         x,y = window.get_cursor_pos()
@@ -472,28 +477,23 @@ while window.running:
             vy = int((y - py) * 100)
             
             add_source(x,y,vx,vy)
-            copy_field(density_prev, density)
-            copy_field(u_prev, u)
-            copy_field(v_prev, v)
+            # copy_field(density_prev, density)
+            # copy_field(u_prev, u)
+            # copy_field(v_prev, v)
         else:
             print("click detected")
             add_source(x,y,0,0)
-            copy_field(density_prev, density)
-            copy_field(u_prev, u)
-            copy_field(v_prev, v)
+            # copy_field(density_prev, density)
+            # copy_field(u_prev, u)
+            # copy_field(v_prev, v)
 
         prev_mouse = (x, y)
     else:
         prev_mouse = None
 
-    # calculate all substeps and then update vertices
-    for _ in range(substeps):
-        substep()
-
-
 
     make_display_image()
     current_t += dt    
-    canvas.set_image(img)
+    canvas.set_image(density)
 
 

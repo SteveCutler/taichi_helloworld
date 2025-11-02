@@ -1,2 +1,1 @@
-
-curl_co = 5 #vortex coefficient
+copy_field(density_prev, density)
