@@ -14,13 +14,16 @@ import taichi as ti
 ##use CPU for debugging with print
 ti.init(arch=ti.cpu)
 
-N = 300 #field measurments
+N = 512 #field measurments
 unit = 1/N
 gravity = -9.8
 decay = 0.999 # decay rate
-dt = 0.01 #timestep
-diff = 0.00005 #diffusion coefficient
-curl_co = 10 #vortex coefficient
+dt = 0.05 #timestep
+diff = 0.00001 #diffusion coefficient
+curl_co = 5 #vortex coefficient
+iterations = 4
+substeps = 2
+out_force = 5
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
@@ -30,10 +33,11 @@ div = ti.field(dtype=ti.f32, shape=(N,N)) # divergence field
 curl = ti.field(dtype=ti.f32, shape=(N,N)) # curl field
 
 
-
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
 v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
 density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
+
+prev_mouse = None
 
 
 ## potential to add viscosity here
@@ -58,7 +62,7 @@ def initialize_fields():
         dpsi_dx = (ti.sin(0.10 * (i + 0.10/N)) * ti.cos(0.10 * j) - psi) * N
         dpsi_dy = (ti.sin(0.10 * i) * ti.cos(0.10 * (j + 1/N)) - psi) * N
 
-        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*20
+        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force
         # curl = (∂ψ/∂y, -∂ψ/∂x)
         # u[i, j] =  dpsi_dy/unit*10 
         # v[i, j] = -dpsi_dx/unit*10
@@ -80,18 +84,28 @@ def set_p():
         p[I] = 0
         
 @ti.kernel
-def add_source(x: int,y: int):
+def add_source(x: int, y: int, vx: int, vy: int):
+    print("add source")
     r = int(N*0.02)
-    
 
-    for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
-        dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
-        vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
-        ##print("dist = ",1-dist/r)
-        
-        density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
-        u[i, j] =  (vel[0]*N)*(1-dist/r)*10
-        v[i, j] =  (vel[1]*N)*(1-dist/r)*10
+    if vx == 0 and vy == 0:
+        for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
+            dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
+            vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
+            ##print("dist = ",1-dist/r)
+            
+            density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
+            u[i, j] =  (vel[0]*N)*(1-dist/r)*10
+            v[i, j] =  (vel[1]*N)*(1-dist/r)*10
+    else:
+        for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):
+            dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
+            vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
+            ##print("dist = ",1-dist/r)
+            
+            density[i, j] = clamp((density[i,j] + clamp((1-dist/r),0.0,1.0)),0.0,1.0)
+            u[i, j] =  (vel[0]*N)*clamp((1-dist/r),0.0,1.0)*10 + vx*100
+            v[i, j] =  (vel[1]*N)*clamp((1-dist/r),0.0,1.0)*10 + vy*100
     
 
 @ti.kernel
@@ -254,20 +268,31 @@ def advect():
     # note: use the new values for the current iteration when available (the cells that came before)
 
 @ti.kernel
-def diffuse():
+def diffuse_dens():
 
     ##diffusion co-efficient
     a = dt * diff * N * N
 
-    for k in range(20):
+    for k in range(iterations):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
             density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a) * decay
+        
+    set_bnd(density)
+
+@ti.kernel
+def diffuse_vel():
+
+    ##diffusion co-efficient
+    a = dt * diff * N * N
+
+    for k in range(iterations):
+        for i, j in ti.ndrange((1,N-1),(1,N-1)):
+            ## don't diffuse on boundaries
             u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
             v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
         
-        set_bnd(density)
-        set_vel_bnd(u,v)
+    set_vel_bnd(u,v)
 
 
 ## PROJECT
@@ -285,11 +310,8 @@ def project():
         div[i,j] = ((-0.5)) * ((u[i+1,j]-u[i-1,j]) + (v[i,j+1] - v[i,j-1]))
 
         # at boundaries
-    set_bnd(div)
-   
-
-
-    for k in range(20):
+    ##set_bnd(div)
+    for k in range(iterations):
         ## don't calculate on boundaries
         
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
@@ -298,7 +320,7 @@ def project():
             p[i,j] = (1/4) * (div[i,j] + p[i-1,j] + p[i+1,j] + p[i,j+1] + p[i,j-1])
 
             #compute boundaries
-        set_bnd(p)
+    ##set_bnd(p)
     
     ## resolve pressure
     for i, j in ti.ndrange((1,N-1),(1,N-1)):
@@ -317,12 +339,9 @@ def project():
 def compute_curl():
     for i,j in ti.ndrange((1,N-1),(1,N-1)):
         curl[i,j] = 0.5*(v[i+1,j] - v[i-1,j]) - 0.5*(u[i,j+1]-u[i,j-1])
-    set_bnd(curl)
-
-
-@ti.kernel
-def compute_vortex_force():
-    for i,j in ti.ndrange((1,N-1),(1,N-1)):
+    ##set_bnd(curl)
+    
+    for i,j in ti.ndrange((2,N-2),(2,N-2)):
         grad_x = 0.5*(ti.abs(curl[i+1,j]) - ti.abs(curl[i-1,j]))
         grad_y = 0.5*(ti.abs(curl[i,j+1]) - ti.abs(curl[i,j-1]))
         mag = ti.Vector([grad_x,grad_y]).norm() + 1e-5 ## adding tiny amount to avoid dividing by 0
@@ -330,6 +349,10 @@ def compute_vortex_force():
         u[i,j] = u[i,j] + Ny * curl[i,j] * dt * curl_co
         v[i,j] = v[i,j] - Nx * curl[i,j] * dt * curl_co
     set_vel_bnd(u,v)
+   
+
+
+    
 
 
        
@@ -360,42 +383,40 @@ def compute_vortex_force():
 
 
 def substep():
+    global u, v, u_prev, v_prev, density, density_prev
+
+
+    ## GRAVITY
     ##force() # gravity
     ##copy_field(v_prev, v)
-    if window.is_pressed(ti.ui.LMB):
-        x,y = window.get_cursor_pos()
-        x = int(x*N)
-        y = int(y*N)
-        add_source(x,y)
-        copy_field(density_prev, density)
-        copy_field(u_prev, u)
-        copy_field(v_prev, v)
-        print("click detected")
-    advect()
-    copy_field(v_prev, v)
-    copy_field(u_prev, u)
-    copy_field(density_prev, density)
-
-    diffuse()
-    copy_field(v_prev, v)
-    copy_field(u_prev, u)
-   
-    compute_curl()
-    compute_vortex_force()
-    copy_field(v_prev, v)
-    copy_field(u_prev, u)
-
     
+
+    ## ADVECT
+    advect()
+    v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
+    density_prev, density = density, density_prev
+
+    # DIFFUSE
+    diffuse_dens()
+    density_prev, density = density, density_prev
+    diffuse_vel()
+    v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
+   
+    ## CURL
+    compute_curl()
+
+    ## PROJECT
     project()
-    copy_field(v_prev, v)
-    copy_field(u_prev, u)
-    copy_field(density_prev, density)
-    ##clamp_values(density)
+
+    ##ti.profiler.print_kernel_profiler_info()
 
 
 
 
-## Display logic
+
+## DISPLAY LOGIC
 
 img = ti.Vector.field(3, dtype=ti.f32, shape=(N,N))
 
@@ -418,7 +439,7 @@ canvas.set_background_color((0,0,0))
 ##camera = ti.ui.Camera()
 ## start time
 current_t = 0.0
-substeps = 5
+
 
 ##Initialize fields
 initialize_fields()
@@ -437,9 +458,40 @@ while window.running:
     #     initialize_fields()
     #     current_t=0
         
+            ## CHECK FOR MOUSE CLICKS
+    if window.is_pressed(ti.ui.LMB):
+        x,y = window.get_cursor_pos()
+        x = int(x*N)
+        y = int(y*N)
+
+
+        
+        if prev_mouse is not None:
+            px, py = prev_mouse
+            vx = int((x - px) * 100)   # scale sensitivity
+            vy = int((y - py) * 100)
+            
+            add_source(x,y,vx,vy)
+            copy_field(density_prev, density)
+            copy_field(u_prev, u)
+            copy_field(v_prev, v)
+        else:
+            print("click detected")
+            add_source(x,y,0,0)
+            copy_field(density_prev, density)
+            copy_field(u_prev, u)
+            copy_field(v_prev, v)
+
+        prev_mouse = (x, y)
+    else:
+        prev_mouse = None
+
     # calculate all substeps and then update vertices
     for _ in range(substeps):
         substep()
+
+
+
     make_display_image()
     current_t += dt    
     canvas.set_image(img)
