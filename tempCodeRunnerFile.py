@@ -1,1 +1,1 @@
-copy_field(density_prev, density)
+e-5) * amp

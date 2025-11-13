@@ -4,10 +4,14 @@
 
 ## w0(x) -> add force -> w1(x) -> advect ->  w2(x) -> diffuse -> w3(x) -> project -> w4(x)
 
-## make random splash function thats different for each iteration - random number gen
+## make random splash functio for origin  thats different for each iteration - random number gen
 ## add noise to source add function
 ## make diffusion milky?
+## add randomization to input level of add source
+## add noise field - disturb? turubulence? that makes it smoky
+## 2 modes: fluid and smoke
 
+import random
 import taichi as ti
 
 ###########
@@ -20,15 +24,18 @@ ti.init(arch=ti.cpu)
 N = 512 #field measurments
 unit = 1/N
 gravity = -9.8
-decay = 0.999 # decay rate
+bouyancy_mult = 10
+decay = 0.997 # decay rate
 dt = 0.05 #timestep
-diff = 0.000001 #diffusion coefficient
-curl_co = 10 #vortex coefficient
+diff = 0.0001 #diffusion coefficient
+curl_co = 50 #vortex coefficient
 iterations = 4
 substeps = 1
 out_force = 25
-source_r = 0.02
+source_r = 0.05
 source_vel = 100
+source_dens_mult = 0.5
+current_t = 0.0
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
@@ -36,6 +43,8 @@ density = ti.field(dtype=ti.f32, shape=(N,N)) # density field
 p = ti.field(dtype=ti.f32, shape=(N,N)) # pressure field
 div = ti.field(dtype=ti.f32, shape=(N,N)) # divergence field
 curl = ti.field(dtype=ti.f32, shape=(N,N)) # curl field
+noise_scalar = ti.field(dtype=ti.f32, shape=(N,N))
+noise = ti.Vector.field(2, dtype=ti.f32, shape=(N,N))
 
 
 u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
@@ -70,6 +79,9 @@ def initialize_fields():
             u[i, j] = outward_force[0]
             v[i, j] = outward_force[1]
 
+@ti.func
+def noise(x,y,t,freq):
+    return ti.sin(x*freq+t*0.3) * ti.cos(y*freq*1.1+t*0.2)
         
 @ti.func
 def set_p():
@@ -89,16 +101,21 @@ def add_source(x: int, y: int, vx: int, vy: int):
             falloff = 1.0 - dist / r
             w = falloff * falloff  # smooth falloff
             vel = (ti.Vector([i,j]) - ti.Vector([x,y])) 
+            
+            exp_w = ti.exp(-4*dist/r)
 
             
             perp = ti.Vector([-vel[1], vel[0]])  # perpendicular swirl
             mix = ti.random(ti.f32) * -0.1  # ±30% swirl mix
             noisy_dir = (vel + perp) * mix
         
+            rand = 0.1 + 0.9 * ti.random(ti.f32)
+
             # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
-            density[i, j] = density[i,j] + clamp(w,0,1)
-            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N + vx)*clamp(w,0,1) + noisy_dir[0]*50
-            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N + vy)*clamp(w,0,1) + noisy_dir[1]*50
+            density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult* rand
+
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*rand + noisy_dir[0]*10 + vx*5
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*rand + noisy_dir[1]*10 + vy*5
 
             density_prev[i,j] = density[i,j]
             u_prev[i,j] = u[i,j]
@@ -206,11 +223,16 @@ def clamp_values(field: ti.template()):
     #w1(x) = w0(x) + delta T * f(x,t)
     #frame 2 vel = frame 1 vel + the force * time interval
 @ti.kernel
-def force():
-    for I in ti.grouped(density):
-        ## adding gravity force * units per timestep to vertical velocity
-      ##  print(v[I]," + ", gravity*unit*dt, )
+def gravity():
+    for I in ti.grouped(v):
+
         v[I] = v[I] + gravity * unit
+
+@ti.kernel
+def up():
+    for I in ti.grouped(v):
+        v[I] = v[I] + bouyancy_mult * dt * N
+        ##print(v[I])
     
     
 
@@ -254,7 +276,6 @@ def advect():
     set_bnd(density)
     set_vel_bnd(u, v)
     
-
 
 ## DIFFUSE
     ## NOTES: use gauss seidl relaxation, 20 iteration
@@ -347,13 +368,35 @@ def compute_curl():
         v[i,j] = v[i,j] - Nx * curl[i,j] * dt * curl_co
     set_vel_bnd(u,v)
    
+## TURBULENCE
+@ti.kernel
+def calc_noise(t: ti.f32, freq: ti.f32, amp: ti.f32):
+    for i, j in ti.ndrange((1,N-1),(1,N-1)):
+        #scalar noise
+        noise_scalar[i, j] = amp * noise(i * freq, j * freq, t * 0.2, 0)
 
-
-    
-
-
-       
+    #set boundary cells
+    set_bnd(noise_scalar)
         
+@ti.kernel
+def apply_turbulence(strength: ti.f32, amp: ti.f32):
+    for i, j in ti.ndrange((1,N-1),(1,N-1)):
+        #derivatives
+        delta_nx = (noise_scalar[i+1, j] - noise_scalar[i-1,j])
+        delta_ny = (noise_scalar[i, j+1] - noise_scalar[i,j-1])
+
+        vec = ti.Vector([delta_ny, -delta_nx])
+        mag = vec.norm() + 1e-5
+        curl_vector = (vec / mag) * amp
+
+        u[i,j] = u[i,j] + 10
+        v[i,j] = v[i,j] + 10
+        # u[i,j] = u[i,j] + curl_vector[0] * strength * dt
+        # v[i,j] = v[i,j] + curl_vector[1] * strength * dt
+    set_vel_bnd(u, v)
+
+
+
 
 
 
@@ -380,19 +423,29 @@ def compute_curl():
 
 
 def substep():
-    global u, v, u_prev, v_prev, density, density_prev
+    global u, v, u_prev, v_prev, density, density_prev, current_t
 
 
     ## GRAVITY
     ##force() # gravity
     ##copy_field(v_prev, v)
     
+    up()
+    v_prev, v = v, v_prev
 
+   
     ## ADVECT
     advect()
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
     density_prev, density = density, density_prev
+    
+        ##TURBLUENCE
+    calc_noise(current_t, freq=0.08, amp=1.0)
+    apply_turbulence(strength=5.0, amp=0.3)
+    current_t = current_t + dt/substeps
+    v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
 
     # DIFFUSE
     diffuse_dens()
@@ -401,8 +454,12 @@ def substep():
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
    
+
     ## CURL
     compute_curl()
+
+
+    
 
     ## PROJECT
     project()
@@ -438,7 +495,6 @@ canvas.set_background_color((0,0,0))
 ##scene = window.get_scene()
 ##camera = ti.ui.Camera()
 ## start time
-current_t = 0.0
 
 
 ##Initialize fields
@@ -493,7 +549,7 @@ while window.running:
 
 
     make_display_image()
-    current_t += dt    
+    current_t += 0.01
     canvas.set_image(density)
 
 

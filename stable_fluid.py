@@ -163,7 +163,8 @@ def advect(vf: ti.template(), qf: ti.template(), new_qf: ti.template()):
 
 @ti.kernel
 def apply_impulse(vf: ti.template(), dyef: ti.template(), imp_data: ti.types.ndarray()):
-    g_dir = -ti.Vector([0, 9.8]) * 300
+    #g_dir = -ti.Vector([0, 9.8]) * 300
+    g_dir = 0
     for i, j in vf:
         omx, omy = imp_data[2], imp_data[3]
         mdir = ti.Vector([imp_data[0], imp_data[1]])
