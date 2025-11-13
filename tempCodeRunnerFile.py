@@ -1,1 +1,1 @@
-e-5) * amp
+    # density_prev, density = density, density_prev
