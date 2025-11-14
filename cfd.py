@@ -24,17 +24,17 @@ ti.init(arch=ti.cpu)
 N = 512 #field measurments
 unit = 1/N
 gravity = -9.8
-bouyancy_mult = 10
+bouyancy_mult = 20
 decay = 0.997 # decay rate
 dt = 0.05 #timestep
-diff = 0.0001 #diffusion coefficient
-curl_co = 50 #vortex coefficient
+diff = 0.00005 #diffusion coefficient
+curl_co = 25 #vortex coefficient
 iterations = 4
 substeps = 1
 out_force = 25
 source_r = 0.05
 source_vel = 100
-source_dens_mult = 0.5
+source_dens_mult = 0.3
 current_t = 0.0
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
@@ -114,8 +114,8 @@ def add_source(x: int, y: int, vx: int, vy: int):
             # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
             density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult* rand
 
-            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*rand + noisy_dir[0]*10 + vx*5
-            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*rand + noisy_dir[1]*10 + vy*5
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*rand + noisy_dir[0]*20 + vx*5
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*rand + noisy_dir[1]*20 + vy*5
 
             density_prev[i,j] = density[i,j]
             u_prev[i,j] = u[i,j]
@@ -231,7 +231,7 @@ def gravity():
 @ti.kernel
 def up():
     for I in ti.grouped(v):
-        v[I] = v[I] + bouyancy_mult * dt * N
+        v[I] = v[I] + bouyancy_mult * dt * N * density[I]
         ##print(v[I])
     
     
@@ -307,8 +307,8 @@ def diffuse_vel():
     for k in range(iterations):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
-            v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
+            u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a) * decay
+            v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a) * decay
         
     set_vel_bnd(u,v)
 
@@ -432,6 +432,7 @@ def substep():
     
     up()
     v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
 
    
     ## ADVECT
@@ -440,12 +441,6 @@ def substep():
     u_prev, u = u, u_prev
     density_prev, density = density, density_prev
     
-        ##TURBLUENCE
-    calc_noise(current_t, freq=0.08, amp=1.0)
-    apply_turbulence(strength=5.0, amp=0.3)
-    current_t = current_t + dt/substeps
-    v_prev, v = v, v_prev
-    u_prev, u = u, u_prev
 
     # DIFFUSE
     diffuse_dens()
@@ -454,6 +449,12 @@ def substep():
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
    
+        ##TURBLUENCE
+    calc_noise(current_t, freq=0.1, amp=1.0)
+    apply_turbulence(strength=1.0, amp=0.3)
+    current_t = current_t + dt/substeps
+    v_prev, v = v, v_prev
+    u_prev, u = u, u_prev
 
     ## CURL
     compute_curl()
