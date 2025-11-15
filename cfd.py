@@ -22,6 +22,8 @@
 
 import random
 import taichi as ti
+import taichi
+import random
 
 
 ###########
@@ -31,16 +33,19 @@ import taichi as ti
 ##use CPU for debugging with print
 ti.init(arch=ti.cpu)
 
+N = 512 #field measurments
+
 ## switches
 
 burst = True
 turbulence = True
 up_force = True
 
-
-
+## perlin vars
+perlin_freq = 0.06
+pnoise = ti.field(dtype=ti.f32, shape=(N,N)) # pnoise field
+pnoise_birth_mix = 3
 ## variables
-N = 512 #field measurments
 unit = 1/N
 gravity = -9.8
 bouyancy_mult = 20
@@ -51,11 +56,12 @@ curl_co = 25 #vortex coefficient
 iterations = 4
 substeps = 1
 out_force = 2000
-r = N//10
+r = N//4
 source_r = 0.05
 source_vel = 100
 source_dens_mult = 0.1
 current_t = 0.0
+
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
@@ -83,22 +89,28 @@ prev_mouse = None
 
 @ti.kernel
 def initialize_fields():
-    
+    seed = rand()
     if burst :
         for i,j in density:
         #define center
             cx, cy =N/2, N/2
-            outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force
-
-
-
+           
             
-            ##circle in center            
-            # dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
-            # if dist < r:
-            #     density[i, j] = clamp(1 * (1-dist/r),0.0,1.0)
-            #     u[i, j] = outward_force[0]
-            #     v[i, j] = outward_force[1]
+            mod_r = (r * pnoise_birth_mix * abs(p_noise_calc(i*perlin_freq,j*perlin_freq, seed)))
+            #circle in center            
+            dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
+            if dist < mod_r :
+                density[i, j] = clamp(1 * (1-dist/mod_r),0.0,1.0)
+                vel_fade = dist/mod_r
+                outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force*vel_fade
+                u[i, j] = outward_force[0]
+                v[i, j] = outward_force[1]
+                #print(vel_fade)
+
+
+@ti.func
+def rand():
+    return random.randint(0, 10_000_000)
 
 @ti.func
 def noise(x,y,t,freq):
@@ -227,27 +239,64 @@ def clamp_values(field: ti.template()):
        
         field[I] = clamp(field[I],0.0,1.0)
        
-# @ti.kernel
-def p_noise():
-    for i,j in density:
-        ## calculate corners with boundary enforcement
-        x_l = int(ti.floor(clamp(i, 0, N-1)))
-        x_r = int(ti.ceil(clamp(x_l+1, 1, N)))
-        y_b = int(ti.floor(clamp(j, 0, N-1)))
-        y_t = int(ti.ceil(clamp(y_b+1, 1, N)))
-        
-        
-        # determine where in cell source is
-        s_x = i - x_l
-        s_y = j - y_b
 
-        ## hash random gradient for eaach grid point
+@ti.func
+def hash(x, y, rand):
+    # deterministic hash
+    hash = x * 374761393 + y * 668265263 + rand
+    hash = (hash ^ (hash >> 13)) * 1274126177
+    hash = hash ^ (hash >> 16)
+    return hash
 
-        ## bilerp for values
+#fade function
+@ti.func
+def fade(t):
+    return t * t * t * (t * (t * 6 - 15) + 10)
 
-        ## fade between them
+#gradient function
+@ti.func
+def gradient(ix, iy, rand):
+    h = hash(ix, iy, rand)
+    
+    ##bit wise mask
+    angle = (h & 0xffff) * (2 * 3.14159265 / 65536.0)
+    return ti.Vector([ti.cos(angle), ti.sin(angle)])
 
-        ## add value to the density grid
+@ti.func
+def p_noise_calc(i, j, rand):
+
+
+    ## calculate corners with boundary enforcement
+    x_l = int(ti.floor(clamp(i, 0, N-1)))
+    x_r = int(ti.ceil(clamp(x_l+1, 1, N)))
+    y_b = int(ti.floor(clamp(j, 0, N-1)))
+    y_t = int(ti.ceil(clamp(y_b+1, 1, N)))
+    
+    # determine where in cell source is
+    s_x = i - x_l
+    s_y = j - y_b
+
+    ## hash random gradient for each grid corner
+    bl_g = gradient(x_l,y_b, rand)
+    br_g = gradient(x_r,y_b, rand)
+    tr_g = gradient(x_r,y_t, rand)
+    tl_g = gradient(x_l,y_t, rand)
+
+    dot_bl = ti.Vector([s_x,s_y]).dot(bl_g)
+    dot_br = ti.Vector([s_x-1,s_y]).dot(br_g)
+    dot_tl = ti.Vector([s_x,1-s_y]).dot(tl_g)
+    dot_tr = ti.Vector([s_x-1,1-s_y]).dot(tr_g)
+
+    
+    ## create fade coefficients
+    x_fade = fade(s_x)
+    y_fade = fade(s_y)
+
+    ##noise value
+    n = bilerp(dot_bl, dot_br, dot_tr, dot_tl, x_fade, y_fade)
+    
+    #print(n)
+    return n
 
 
 
