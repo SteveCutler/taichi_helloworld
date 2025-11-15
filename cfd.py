@@ -57,9 +57,9 @@ iterations = 4
 substeps = 1
 out_force = 2000
 r = N//4
-source_r = 0.05
-source_vel = 100
-source_dens_mult = 0.1
+source_r = 0.06
+source_vel = 150
+source_dens_mult = 0.15
 current_t = 0.0
 
 
@@ -89,6 +89,7 @@ prev_mouse = None
 
 @ti.kernel
 def initialize_fields():
+    
     seed = rand()
     if burst :
         for i,j in density:
@@ -120,11 +121,14 @@ def noise(x,y,t,freq):
 def set_p():
     for I in ti.grouped(p):
         p[I] = 0
-        
+
 @ti.kernel
 def add_source(x: int, y: int, vx: int, vy: int):
    # print("add source")
+   
+    print(current_t)
     r = int(N*source_r)
+    ##mod_r = abs(p_noise_calc(x*perlin_freq,y*perlin_freq, x))
     
     for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):      
         dist = (ti.Vector([i,j]) - ti.Vector([x,y])).norm()
@@ -133,7 +137,8 @@ def add_source(x: int, y: int, vx: int, vy: int):
         if dist < r:
             falloff = 1.0 - dist / r
             w = falloff * falloff  # smooth falloff
-            vel = (ti.Vector([i,j]) - ti.Vector([x,y])) 
+            vel_mult = abs((3 * p_noise_calc(i*perlin_freq,j*perlin_freq, i+j)))
+            vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
             
             exp_w = ti.exp(-4*dist/r)
 
@@ -142,13 +147,13 @@ def add_source(x: int, y: int, vx: int, vy: int):
             mix = ti.random(ti.f32) * -0.1  # ±30% swirl mix
             noisy_dir = (vel + perp) * mix
         
-            rand = 0.1 + 0.9 * ti.random(ti.f32)
+            rand = 0.1 + 0.3 * ti.random(ti.f32)
 
             # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
             density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult* rand
 
-            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*rand + noisy_dir[0]*20 + vx*5
-            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*rand + noisy_dir[1]*20 + vy*5
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*vel_mult + vx*5
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*vel_mult + vy*5
 
             density_prev[i,j] = density[i,j]
             u_prev[i,j] = u[i,j]
@@ -243,7 +248,7 @@ def clamp_values(field: ti.template()):
 @ti.func
 def hash(x, y, rand):
     # deterministic hash
-    hash = x * 374761393 + y * 668265263 + rand
+    hash = x * 374761393 + y * 668265263 + int(current_t) + rand
     hash = (hash ^ (hash >> 13)) * 1274126177
     hash = hash ^ (hash >> 16)
     return hash
