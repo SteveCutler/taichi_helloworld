@@ -4,15 +4,25 @@
 
 ## w0(x) -> add force -> w1(x) -> advect ->  w2(x) -> diffuse -> w3(x) -> project -> w4(x)
 
-## make random splash functio for origin  thats different for each iteration - random number gen
-## add noise to source add function
-## make diffusion milky?
-## add randomization to input level of add source
-## add noise field - disturb? turubulence? that makes it smoky
+
+#########
+## TO DO 
+#########
+
 ## 2 modes: fluid and smoke
+## random shape and vel burst when it starts
+## optimize for gpu usage, currently gpu runs it super slowly
+## create live controls with overlays that change variables
+## noise up source and burst shape a bit more so that the texture gets more interesting
+    ## noise shape
+    ## add curl noise and turbulence
+    ## mult vel by distance to center
+    ## noise up density
+
 
 import random
 import taichi as ti
+
 
 ###########
 ## CONFIG
@@ -21,6 +31,15 @@ import taichi as ti
 ##use CPU for debugging with print
 ti.init(arch=ti.cpu)
 
+## switches
+
+burst = True
+turbulence = True
+up_force = True
+
+
+
+## variables
 N = 512 #field measurments
 unit = 1/N
 gravity = -9.8
@@ -31,10 +50,11 @@ diff = 0.00005 #diffusion coefficient
 curl_co = 25 #vortex coefficient
 iterations = 4
 substeps = 1
-out_force = 25
+out_force = 2000
+r = N//10
 source_r = 0.05
 source_vel = 100
-source_dens_mult = 0.3
+source_dens_mult = 0.1
 current_t = 0.0
 
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
@@ -64,20 +84,21 @@ prev_mouse = None
 @ti.kernel
 def initialize_fields():
     
-    for i,j in density:
+    if burst :
+        for i,j in density:
         #define center
-        cx, cy =N/2, N/2
-        outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force
+            cx, cy =N/2, N/2
+            outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force
 
 
 
-        ##circle in center
-        r = N//5
-        dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
-        if dist < r:
-            density[i, j] = clamp(1 * (1-dist/r),0.0,1.0)
-            u[i, j] = outward_force[0]
-            v[i, j] = outward_force[1]
+            
+            ##circle in center            
+            # dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
+            # if dist < r:
+            #     density[i, j] = clamp(1 * (1-dist/r),0.0,1.0)
+            #     u[i, j] = outward_force[0]
+            #     v[i, j] = outward_force[1]
 
 @ti.func
 def noise(x,y,t,freq):
@@ -90,7 +111,7 @@ def set_p():
         
 @ti.kernel
 def add_source(x: int, y: int, vx: int, vy: int):
-    print("add source")
+   # print("add source")
     r = int(N*source_r)
     
     for i,j in ti.ndrange((x-r,x+r),(y-r,y+r)):      
@@ -206,6 +227,29 @@ def clamp_values(field: ti.template()):
        
         field[I] = clamp(field[I],0.0,1.0)
        
+# @ti.kernel
+def p_noise():
+    for i,j in density:
+        ## calculate corners with boundary enforcement
+        x_l = int(ti.floor(clamp(i, 0, N-1)))
+        x_r = int(ti.ceil(clamp(x_l+1, 1, N)))
+        y_b = int(ti.floor(clamp(j, 0, N-1)))
+        y_t = int(ti.ceil(clamp(y_b+1, 1, N)))
+        
+        
+        # determine where in cell source is
+        s_x = i - x_l
+        s_y = j - y_b
+
+        ## hash random gradient for eaach grid point
+
+        ## bilerp for values
+
+        ## fade between them
+
+        ## add value to the density grid
+
+
 
 
 
@@ -429,10 +473,10 @@ def substep():
     ## GRAVITY
     ##force() # gravity
     ##copy_field(v_prev, v)
-    
-    up()
-    v_prev, v = v, v_prev
-    u_prev, u = u, u_prev
+    if up_force : 
+        up()
+        v_prev, v = v, v_prev
+        u_prev, u = u, u_prev
 
    
     ## ADVECT
@@ -450,11 +494,12 @@ def substep():
     u_prev, u = u, u_prev
    
         ##TURBLUENCE
-    calc_noise(current_t, freq=0.1, amp=1.0)
-    apply_turbulence(strength=1.0, amp=0.3)
-    current_t = current_t + dt/substeps
-    v_prev, v = v, v_prev
-    u_prev, u = u, u_prev
+    if turbulence : 
+        calc_noise(current_t, freq=0.1, amp=1.0)
+        apply_turbulence(strength=1.0, amp=0.3)
+        current_t = current_t + dt/substeps
+        v_prev, v = v, v_prev
+        u_prev, u = u, u_prev
 
     ## CURL
     compute_curl()
