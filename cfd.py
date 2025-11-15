@@ -12,7 +12,13 @@
 ## 2 modes: fluid and smoke
 ## random shape and vel burst when it starts
 ## optimize for gpu usage, currently gpu runs it super slowly
-## create live controls with overlays that change variables
+
+#fix burst popping out of existence
+
+##GUI
+#create sliders for live controls
+#create debug to switch on (vel display as arrows) to tweak turbulence etc
+
 ## noise up source and burst shape a bit more so that the texture gets more interesting
     ## noise shape
     ## add curl noise and turbulence
@@ -40,6 +46,7 @@ N = 512 #field measurments
 burst = True
 turbulence = True
 up_force = True
+arrows = True
 
 ## perlin vars
 perlin_freq = 0.06
@@ -59,7 +66,7 @@ out_force = 2000
 r = N//4
 source_r = 0.06
 source_vel = 150
-source_dens_mult = 0.15
+source_dens_mult = 0.3
 current_t = 0.0
 
 
@@ -78,6 +85,13 @@ v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
 density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
 
 prev_mouse = None
+
+
+# DISPLAY DEBUG
+
+# vel display field
+step = 10
+arrows = ti.Vector.field(2, dtype=ti.f32, shape=(N*N//step*2))
 
 
 ## potential to add viscosity here
@@ -304,6 +318,22 @@ def p_noise_calc(i, j, rand):
     return n
 
 
+def vel_debug():
+    nx= N // step
+    ny= N // step
+
+    for ni, nj in ti.ndrange((0,nx),(0,ny)):
+
+        i = nx*N
+        j = ny*N
+
+
+        arrows[i,j] = ti.Vector([i,j])
+        arrows[i+1,j+1] = ti.Vector([u[i,j],v[i,j]])
+        
+
+
+
 
 
 
@@ -331,6 +361,7 @@ def up():
     for I in ti.grouped(v):
         v[I] = v[I] + bouyancy_mult * dt * N * density[I]
         ##print(v[I])
+    
     
     
 
@@ -527,11 +558,12 @@ def substep():
     ## GRAVITY
     ##force() # gravity
     ##copy_field(v_prev, v)
+
     if up_force : 
         up()
+  
         v_prev, v = v, v_prev
         u_prev, u = u, u_prev
-
    
     ## ADVECT
     advect()
@@ -563,9 +595,13 @@ def substep():
 
     ## PROJECT
     project()
+    if arrows:
+        vel_debug()
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
     density_prev, density = density, density_prev
+
+
 
     ##ti.profiler.print_kernel_profiler_info()
 
@@ -605,6 +641,8 @@ copy_field(v_prev, v)
 
 ##Render loop
 while window.running:
+
+
 
 
 
@@ -651,3 +689,6 @@ while window.running:
     make_display_image()
     current_t += 0.01
     canvas.set_image(density)
+    if arrows:
+        #canvas.lines(vel_display, color=(1.0, 1.0, 1.0), width=.1, scale=0.1)
+        canvas.lines(arrows, width=1.0, color=(1.0,1.0,1.0))
