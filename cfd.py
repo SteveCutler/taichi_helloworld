@@ -41,14 +41,14 @@ up_force = True
 ## perlin vars
 
 pnoise = ti.field(dtype=ti.f32, shape=(N,N)) # pnoise field
-pnoise_birth_mix = 3
+pnoise_birth_mix = 1.5
 
 
 ## variables
 
 gravity = -9.8
 #bouyancy_mult = 20
-decay = 0.997 # decay rate
+
 dt = 0.05 #timestep
 diff = 0.00005 #diffusion coefficient
 curl_co = 25 #vortex coefficient
@@ -57,8 +57,7 @@ substeps = 1
 substep_count = 1
 out_force = 2000
 r = N//4
-source_vel = 150
-source_dens_mult = 0.3
+
 current_t = 0.0
 step = 15 # vel display field space step (number of arrows)
 
@@ -89,12 +88,19 @@ prev_mouse = None
 
 params = {
     "bouyancy_mult": 20.0,
+    "persistence": 0.985,
+
     "source_radius": 0.05,
+    "source_vel": 2.2,
+    "source_dens_mult": 0.15,
+
+    #Turbulence
     "turb_freq": 0.06,
     "turb_amp": 1.0,
-    "turb_strength": 10.0,
-    "turb_speed": 0.02,
+    "turb_strength": 30.0,
+    "turb_speed": 0.3,
     
+    #Switches
     "turbulence": True,
     "arrows": False,
     "noise_display": False
@@ -119,23 +125,28 @@ def initialize_fields():
         v_prev[I] = 0
 
 @ti.kernel
-def add_burst(freq:ti.f32):
+def add_burst(freq:ti.f32, time:ti.i16):
         seed = rand()
         for i,j in density:
         #define center
             cx, cy =N/2, N/2
            
             
-            mod_r = (r * pnoise_birth_mix * abs(p_noise_calc(i*freq,j*freq, seed+substep_count,1)))
-            #circle in center            
+            mod_r = (r * pnoise_birth_mix * abs(clamp (p_noise_calc(i*freq,j*freq, time*100, 1) ,0.1,1)))
+         
             dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
+
             if dist < mod_r :
                 density[i, j] = density[i,j] + clamp(1 * (1-dist/mod_r),0.0,1.0)
-                vel_fade = dist/mod_r
+                ##density[i, j] = 1
+                vel_fade = 1-dist/mod_r
                 outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force*vel_fade
+                
                 u[i, j] = outward_force[0]
                 v[i, j] = outward_force[1]
-                #print(vel_fade)
+
+                density_prev[i,j] = density[i,j]
+
 
 
 
@@ -153,7 +164,7 @@ def set_p():
         p[I] = 0
 
 @ti.kernel
-def add_source(x: int, y: int, vx: int, vy: int, source_r:ti.f32, freq:ti.f32, speed:ti.f32):
+def add_source(x: int, y: int, vx: int, vy: int, source_r:ti.f32, freq:ti.f32, speed:ti.f32, source_dens_mult: ti.f32, source_vel: ti.f32):
 
 
     r = int(N*source_r)
@@ -181,8 +192,8 @@ def add_source(x: int, y: int, vx: int, vy: int, source_r:ti.f32, freq:ti.f32, s
             # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
             density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult * clamp(vel_mult/3,0.1,1)
 
-            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*vel_mult*2 + vx*5
-            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*vel_mult*2 + vy*5
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*vel_mult*source_vel + vx*5
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*vel_mult*source_vel + vy*5
 
             density_prev[i,j] = density[i,j]
             u_prev[i,j] = u[i,j]
@@ -461,7 +472,7 @@ def advect():
     # note: use the new values for the current iteration when available (the cells that came before)
 
 @ti.kernel
-def diffuse_dens():
+def diffuse_dens(persistence: ti.f32):
 
     ##diffusion co-efficient
     a = dt * diff * N * N
@@ -469,12 +480,12 @@ def diffuse_dens():
     for k in range(iterations):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a) * decay
+            density[i,j] = (density_prev[i,j] + a*(density[i-1,j]+density[i,j-1]+ density[i+1,j] + density[i,j+1]))/(1+4*a) * persistence
         
     set_bnd(density)
 
 @ti.kernel
-def diffuse_vel():
+def diffuse_vel(persistence: ti.f32):
 
     ##diffusion co-efficient
     a = dt * diff * N * N
@@ -482,8 +493,8 @@ def diffuse_vel():
     for k in range(iterations):
         for i, j in ti.ndrange((1,N-1),(1,N-1)):
             ## don't diffuse on boundaries
-            u[i,j] = (u_prev[i,j] + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a) * decay
-            v[i,j] = (v_prev[i,j] + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a) * decay
+            u[i,j] = (u_prev[i,j]* 0.98 + a*(u[i-1,j]+u[i,j-1]+ u[i+1,j] + u[i,j+1]))/(1+4*a)
+            v[i,j] = (v_prev[i,j]* 0.98 + a*(v[i-1,j]+v[i,j-1]+ v[i+1,j] + v[i,j+1]))/(1+4*a)
         
     set_vel_bnd(u,v)
 
@@ -623,9 +634,9 @@ def substep(params):
     
 
     # DIFFUSE
-    diffuse_dens()
+    diffuse_dens(params['persistence'])
     density_prev, density = density, density_prev
-    diffuse_vel()
+    diffuse_vel(params['persistence'])
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
    
@@ -686,7 +697,7 @@ gui = window.get_gui()
 
 ##Initialize fields
 initialize_fields()
-add_burst(params['turb_freq'])
+add_burst(params['turb_freq'], substep_count)
 copy_field(density_prev, density)
 copy_field(u_prev, u)
 copy_field(v_prev, v)  
@@ -698,8 +709,11 @@ while window.running:
     gui.begin("Controls", 0.02, 0.02, 0.3, 0.4)
 
     # sliders
-    params["bouyancy_mult"] = gui.slider_float("Buoyancy", params["bouyancy_mult"], 0.0, 100.0)
-    params["source_radius"] = gui.slider_float("Source Radius", params["source_radius"], 0.001, 0.2)
+    params["bouyancy_mult"] = gui.slider_float("Buoyancy", params["bouyancy_mult"], 0.0, 50.0)
+    params["persistence"] = gui.slider_float("Persistence", params["persistence"], 0.95, 1)
+    params["source_radius"] = gui.slider_float("Source Radius", params["source_radius"], 0.001, 2)
+    params["source_vel"] = gui.slider_float("Source Velocity", params["source_vel"], 0.001, 10)
+    params["source_dens_mult"] = gui.slider_float("Source Density", params["source_dens_mult"], 0.001, 1)
     params["turb_freq"] = gui.slider_float("Noise Freq", params["turb_freq"], 0.001, 0.2)
     params["turb_amp"]  = gui.slider_float("Noise Amp", params["turb_amp"], 0.0, 3.0)
     params["turb_strength"]  = gui.slider_float("Noise Strength", params["turb_strength"], 0.01, 50.0)
@@ -715,7 +729,8 @@ while window.running:
     if gui.button("Reset"):
        initialize_fields()
     if gui.button("Burst"):
-        add_burst(params['turb_freq'])
+        add_burst(params['turb_freq'], substep_count)
+        density_prev, density = density, density_prev
 
     gui.end()
 
@@ -737,11 +752,11 @@ while window.running:
             vx = int((x - px) * 100)   # scale sensitivity
             vy = int((y - py) * 100)
             
-            add_source(x,y,vx,vy, params['source_radius'], params['turb_freq'], params['turb_speed'])
+            add_source(x,y,vx,vy, params['source_radius'], params['turb_freq'], params['turb_speed'], params['source_dens_mult'], params['source_vel'])
 
         else:
             print("adding source")
-            add_source(x,y,0,0, params['source_radius'], params['turb_freq'], params['turb_speed'])
+            add_source(x,y,0,0, params['source_radius'], params['turb_freq'], params['turb_speed'], params['source_dens_mult'], params['source_vel'])
 
 
         prev_mouse = (x, y)
