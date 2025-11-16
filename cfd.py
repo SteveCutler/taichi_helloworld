@@ -10,21 +10,10 @@
 #########
 
 ## 2 modes: fluid and smoke
-## random shape and vel burst when it starts
+
 ## optimize for gpu usage, currently gpu runs it super slowly
-#drive noise with time that upates every substep
 #fix burst popping out of existence
-#drive turbulence with perlin noise
-
-##GUI
-#create sliders for live controls
-#create debug to switch on (vel display as arrows) to tweak turbulence etc
-
-## noise up source and burst shape a bit more so that the texture gets more interesting
-    ## noise shape
-    ## add curl noise and turbulence
-    ## mult vel by distance to center
-    ## noise up density
+#burst button doesn't really work
 
 
 import random
@@ -41,24 +30,24 @@ import random
 ti.init(arch=ti.cpu)
 
 N = 512 #field measurments
-
+unit = 1/N
 ## switches
 
 burst = True
-turbulence = True
+
 up_force = True
-arrows = True
+
 
 ## perlin vars
-perlin_freq = 0.06
+
 pnoise = ti.field(dtype=ti.f32, shape=(N,N)) # pnoise field
 pnoise_birth_mix = 3
-pnoise_time_mult = .2
+
 
 ## variables
-unit = 1/N
+
 gravity = -9.8
-bouyancy_mult = 20
+#bouyancy_mult = 20
 decay = 0.997 # decay rate
 dt = 0.05 #timestep
 diff = 0.00005 #diffusion coefficient
@@ -68,39 +57,51 @@ substeps = 1
 substep_count = 1
 out_force = 2000
 r = N//4
-source_r = 0.05
 source_vel = 150
 source_dens_mult = 0.3
 current_t = 0.0
+step = 15 # vel display field space step (number of arrows)
 
-
+# fields/states
 u = ti.field(dtype=ti.f32, shape=(N,N)) # x velocity field
 v = ti.field(dtype=ti.f32, shape=(N,N)) # y velocity field
 density = ti.field(dtype=ti.f32, shape=(N,N)) # density field
+
+u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
+v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
+density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
+
 p = ti.field(dtype=ti.f32, shape=(N,N)) # pressure field
 div = ti.field(dtype=ti.f32, shape=(N,N)) # divergence field
 curl = ti.field(dtype=ti.f32, shape=(N,N)) # curl field
 noise_scalar = ti.field(dtype=ti.f32, shape=(N,N))
 noise = ti.Vector.field(2, dtype=ti.f32, shape=(N,N))
 
-
-u_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step x velocity field
-v_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step y velocity field
-density_prev = ti.field(dtype=ti.f32, shape=(N,N)) # prev step density field
-
-prev_mouse = None
-
-
-# DISPLAY DEBUG
-
-# vel display field
-
-step = 15
 arrows_array = ti.Vector.field(2, dtype=ti.f32, shape=(N//step*N//step*2))
 triangles = ti.Vector.field(2, dtype=ti.f32, shape=(N//step*N//step*3))
 
 
-## potential to add viscosity here
+prev_mouse = None
+
+####################
+## SETUP GUI PARAMS
+####################
+
+params = {
+    "bouyancy_mult": 20.0,
+    "source_radius": 0.05,
+    "turb_freq": 0.06,
+    "turb_amp": 1.0,
+    "turb_strength": 10.0,
+    "turb_speed": 0.02,
+    
+    "turbulence": True,
+    "arrows": False,
+    "noise_display": False
+}
+
+
+
 
 
 ###########
@@ -109,24 +110,33 @@ triangles = ti.Vector.field(2, dtype=ti.f32, shape=(N//step*N//step*3))
 
 @ti.kernel
 def initialize_fields():
-    
-    seed = rand()
-    if burst :
+    for I in ti.grouped(density):
+        density[I] = 0
+        u[I] = 0
+        v[I] = 0
+        density_prev[I] = 0
+        u_prev[I] = 0
+        v_prev[I] = 0
+
+@ti.kernel
+def add_burst(freq:ti.f32):
+        seed = rand()
         for i,j in density:
         #define center
             cx, cy =N/2, N/2
            
             
-            mod_r = (r * pnoise_birth_mix * abs(p_noise_calc(i*perlin_freq,j*perlin_freq, seed)))
+            mod_r = (r * pnoise_birth_mix * abs(p_noise_calc(i*freq,j*freq, seed+substep_count,1)))
             #circle in center            
             dist = (ti.Vector([i,j]) - ti.Vector([cx,cy])).norm()
             if dist < mod_r :
-                density[i, j] = clamp(1 * (1-dist/mod_r),0.0,1.0)
+                density[i, j] = density[i,j] + clamp(1 * (1-dist/mod_r),0.0,1.0)
                 vel_fade = dist/mod_r
                 outward_force = (ti.Vector([i,j]) - ti.Vector([cx,cy]))*out_force*vel_fade
                 u[i, j] = outward_force[0]
                 v[i, j] = outward_force[1]
                 #print(vel_fade)
+
 
 
 @ti.func
@@ -143,8 +153,8 @@ def set_p():
         p[I] = 0
 
 @ti.kernel
-def add_source(x: int, y: int, vx: int, vy: int):
-   # print("add source")
+def add_source(x: int, y: int, vx: int, vy: int, source_r:ti.f32, freq:ti.f32, speed:ti.f32):
+
 
     r = int(N*source_r)
     ##mod_r = abs(p_noise_calc(x*perlin_freq,y*perlin_freq, x))
@@ -156,7 +166,7 @@ def add_source(x: int, y: int, vx: int, vy: int):
         if dist < r:
             falloff = 1.0 - dist / r
             w = falloff * falloff  # smooth falloff
-            vel_mult = abs((3 * p_noise_calc(i*perlin_freq,j*perlin_freq, i+j+substep_count)))
+            vel_mult = abs((3 * p_noise_calc(i*freq,j*freq, i+j+substep_count, speed)))
             vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
             
             exp_w = ti.exp(-4*dist/r)
@@ -279,15 +289,15 @@ def fade(t):
 
 #gradient function
 @ti.func
-def gradient(ix, iy, seed):
+def gradient(ix, iy, seed, speed):
     h = hash(ix, iy, seed)
     
     ##bit wise mask
     angle = (h & 0xffff) * (2 * 3.14159265 / 65536.0)
-    return ti.Vector([ti.cos(angle+ seed*pnoise_time_mult), ti.sin(angle+seed*pnoise_time_mult)])
+    return ti.Vector([ti.cos(angle+ seed*speed), ti.sin(angle+seed*speed)])
 
 @ti.func
-def p_noise_calc(i, j, rand):
+def p_noise_calc(i, j, rand, speed):
 
 
 
@@ -303,10 +313,10 @@ def p_noise_calc(i, j, rand):
     s_y = j - y_b
 
     ## hash random gradient for each grid corner
-    bl_g = gradient(x_l,y_b, rand)
-    br_g = gradient(x_r,y_b, rand)
-    tr_g = gradient(x_r,y_t, rand)
-    tl_g = gradient(x_l,y_t, rand)
+    bl_g = gradient(x_l,y_b, rand, speed)
+    br_g = gradient(x_r,y_b, rand, speed)
+    tr_g = gradient(x_r,y_t, rand, speed)
+    tl_g = gradient(x_l,y_t, rand, speed)
 
     dot_bl = ti.Vector([s_x,s_y]).dot(bl_g)
     dot_br = ti.Vector([s_x-1,s_y]).dot(br_g)
@@ -393,9 +403,9 @@ def gravity():
         v[I] = v[I] + gravity * unit
 
 @ti.kernel
-def up():
+def up(up_force: ti.f32):
     for I in ti.grouped(v):
-        v[I] = v[I] + bouyancy_mult * dt * N * density[I]
+        v[I] = v[I] + up_force * dt * N * density[I]
         ##print(v[I])
     
     
@@ -535,11 +545,11 @@ def compute_curl():
    
 ## TURBULENCE
 @ti.kernel
-def calc_noise(t: ti.f32, freq: ti.f32, amp: ti.f32):
+def calc_noise(t: ti.f32, freq: ti.f32, amp: ti.f32, speed: ti.f32):
     for i, j in ti.ndrange((1,N-1),(1,N-1)):
         #scalar noise
         #noise_scalar[i, j] = amp * noise(i * freq, j * freq, t * 0.2, 0)
-        noise_scalar[i, j] = 3 * amp * p_noise_calc(i * freq, j * freq, int(t))
+        noise_scalar[i, j] = 3 * amp * p_noise_calc(i * freq, j * freq, int(t), speed)
         ##print(noise_scalar[i,j])
     #set boundary cells
     set_bnd(noise_scalar)
@@ -591,7 +601,7 @@ def apply_turbulence(strength: ti.f32, amp: ti.f32):
 
 
 
-def substep():
+def substep(params):
     global u, v, u_prev, v_prev, density, density_prev, current_t, substep_count
 
 
@@ -600,7 +610,7 @@ def substep():
     ##copy_field(v_prev, v)
 
     if up_force : 
-        up()
+        up(params['bouyancy_mult'])
   
         v_prev, v = v, v_prev
         u_prev, u = u, u_prev
@@ -620,10 +630,10 @@ def substep():
     u_prev, u = u, u_prev
    
         ##TURBLUENCE
-    if turbulence : 
+    if params['turbulence']: 
         
-        calc_noise(substep_count, freq=0.03, amp=1.0)
-        apply_turbulence(strength=10.0, amp=1)
+        calc_noise(substep_count, freq=params['turb_freq'], amp=params['turb_amp'], speed=params['turb_speed'])
+        apply_turbulence(strength=params['turb_strength'], amp=params['turb_amp'])
         v_prev, v = v, v_prev
         u_prev, u = u, u_prev
 
@@ -642,7 +652,7 @@ def substep():
     u_prev, u = u, u_prev
     density_prev, density = density, density_prev
 
-    if arrows:
+    if params['arrows']:
         vel_debug()
 
     current_t = current_t + dt/substeps
@@ -669,68 +679,84 @@ def make_display_image():
 
 window = ti.ui.Window("Stable Fluids - Steve Cutler", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
-#set to white
 canvas.set_background_color((0,0,0))
-#create scene and camera
-##scene = window.get_scene()
-##camera = ti.ui.Camera()
-## start time
+gui = window.get_gui()
+
 
 
 ##Initialize fields
 initialize_fields()
+add_burst(params['turb_freq'])
 copy_field(density_prev, density)
 copy_field(u_prev, u)
 copy_field(v_prev, v)  
 
 ##Render loop
 while window.running:
-
     window.show()
-    # reset every 1.5 seconds
-    # if current_t > 2.5:
-    #     initialize_fields()
-    #     current_t=0
-        
 
-    # calculate all substeps and then update vertices
+    gui.begin("Controls", 0.02, 0.02, 0.3, 0.4)
+
+    # sliders
+    params["bouyancy_mult"] = gui.slider_float("Buoyancy", params["bouyancy_mult"], 0.0, 100.0)
+    params["source_radius"] = gui.slider_float("Source Radius", params["source_radius"], 0.001, 0.2)
+    params["turb_freq"] = gui.slider_float("Noise Freq", params["turb_freq"], 0.001, 0.2)
+    params["turb_amp"]  = gui.slider_float("Noise Amp", params["turb_amp"], 0.0, 3.0)
+    params["turb_strength"]  = gui.slider_float("Noise Strength", params["turb_strength"], 0.01, 50.0)
+    params["turb_speed"]  = gui.slider_float("Noise Speed", params["turb_speed"], 0.00, 10.0)
+
+    # checkbox
+    params["turbulence"] = gui.checkbox("Turbulence", params["turbulence"])
+    params["arrows"] = gui.checkbox("Display Vel Arrows", params["arrows"])
+    params["noise_display"] = gui.checkbox("Display Noise Field", params["noise_display"])
+
+
+    # buttons
+    if gui.button("Reset"):
+       initialize_fields()
+    if gui.button("Burst"):
+        add_burst(params['turb_freq'])
+
+    gui.end()
+
+    # calculate all substeps and then update
     for _ in range(substeps):
-        substep()
+        substep(params)
         
 
-            ## CHECK FOR MOUSE CLICKS
+    ## check for mouse clicks
     if window.is_pressed(ti.ui.LMB):
         x,y = window.get_cursor_pos()
         x = int(x*N)
         y = int(y*N)
 
 
-        
+        ## checking for previous click to add movement vectors
         if prev_mouse is not None:
             px, py = prev_mouse
             vx = int((x - px) * 100)   # scale sensitivity
             vy = int((y - py) * 100)
             
-            add_source(x,y,vx,vy)
-            # copy_field(density_prev, density)
-            # copy_field(u_prev, u)
-            # copy_field(v_prev, v)
+            add_source(x,y,vx,vy, params['source_radius'], params['turb_freq'], params['turb_speed'])
+
         else:
             print("adding source")
-            add_source(x,y,0,0)
-            # copy_field(density_prev, density)
-            # copy_field(u_prev, u)
-            # copy_field(v_prev, v)
+            add_source(x,y,0,0, params['source_radius'], params['turb_freq'], params['turb_speed'])
+
 
         prev_mouse = (x, y)
     else:
+        #reset
         prev_mouse = None
 
 
     make_display_image()
     current_t += 0.01
     canvas.set_image(density)
-    if arrows:
-        #canvas.lines(vel_display, color=(1.0, 1.0, 1.0), width=.1, scale=0.1)
+    #displays noise field
+    if params['noise_display'] and params['turbulence']:
+        canvas.set_image(noise_scalar)
+    #displays velocity arrows
+    if params['arrows']:
         canvas.lines(arrows_array, width=0.001, color=(1.0,1.0,1.0))
         canvas.triangles(triangles, color=(1.0,1.0,1.0))
