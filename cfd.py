@@ -90,8 +90,10 @@ prev_mouse = None
 # DISPLAY DEBUG
 
 # vel display field
-step = 10
-arrows = ti.Vector.field(2, dtype=ti.f32, shape=(N*N//step*2))
+
+step = 15
+arrows_array = ti.Vector.field(2, dtype=ti.f32, shape=(N//step*N//step*2))
+triangles = ti.Vector.field(2, dtype=ti.f32, shape=(N//step*N//step*3))
 
 
 ## potential to add viscosity here
@@ -317,19 +319,48 @@ def p_noise_calc(i, j, rand):
     #print(n)
     return n
 
-
+@ti.kernel
 def vel_debug():
+    # skipping grid points to only make N/step arrows_array
     nx= N // step
     ny= N // step
 
     for ni, nj in ti.ndrange((0,nx),(0,ny)):
 
-        i = nx*N
-        j = ny*N
+        #real coords
+        i = ni*step
+        j = nj*step
 
+        #norm coords
+        norm_i = i/N
+        norm_j = j/N
+        
+        #val values
+        vel_x = u[i,j]
+        vel_y = v[i,j]
 
-        arrows[i,j] = ti.Vector([i,j])
-        arrows[i+1,j+1] = ti.Vector([u[i,j],v[i,j]])
+        #calc mag
+        mag = ti.sqrt(vel_x*vel_x + vel_y*vel_y) + 1e-5
+
+        norm_vx = vel_x/mag/nx
+        norm_vy = vel_y/mag/nx
+
+        index = (ni * ny + nj)
+        line_index = index * 2
+        arrow_index = index * 3
+       
+        arrows_array[line_index] = ti.Vector([norm_i,norm_j])
+        arrows_array[line_index+1] = ti.Vector([norm_i+norm_vx, norm_j+norm_vy])  
+
+        triangles[arrow_index] = ti.Vector([norm_i+norm_vx, norm_j+norm_vy]) 
+
+        ## arrow left tip
+        # tip point - 0.1 of the direction vector to get there, plus this same distance, rotated 90 degree to the left
+
+        ## arrow right tip
+        triangles[arrow_index+1] = triangles[arrow_index] -  ti.Vector([norm_vx, norm_vy]) * 0.1 + ti.Vector([-norm_vy, norm_vx])*0.1
+        triangles[arrow_index+2] = triangles[arrow_index] -  ti.Vector([norm_vx, norm_vy]) * 0.1 + ti.Vector([norm_vy, -norm_vx])*0.1
+
         
 
 
@@ -691,4 +722,5 @@ while window.running:
     canvas.set_image(density)
     if arrows:
         #canvas.lines(vel_display, color=(1.0, 1.0, 1.0), width=.1, scale=0.1)
-        canvas.lines(arrows, width=1.0, color=(1.0,1.0,1.0))
+        canvas.lines(arrows_array, width=0.001, color=(1.0,1.0,1.0))
+        canvas.triangles(triangles, color=(1.0,1.0,1.0))
