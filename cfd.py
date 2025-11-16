@@ -12,8 +12,9 @@
 ## 2 modes: fluid and smoke
 ## random shape and vel burst when it starts
 ## optimize for gpu usage, currently gpu runs it super slowly
-
+#drive noise with time that upates every substep
 #fix burst popping out of existence
+#drive turbulence with perlin noise
 
 ##GUI
 #create sliders for live controls
@@ -52,6 +53,8 @@ arrows = True
 perlin_freq = 0.06
 pnoise = ti.field(dtype=ti.f32, shape=(N,N)) # pnoise field
 pnoise_birth_mix = 3
+pnoise_time_mult = .2
+
 ## variables
 unit = 1/N
 gravity = -9.8
@@ -62,9 +65,10 @@ diff = 0.00005 #diffusion coefficient
 curl_co = 25 #vortex coefficient
 iterations = 4
 substeps = 1
+substep_count = 1
 out_force = 2000
 r = N//4
-source_r = 0.06
+source_r = 0.05
 source_vel = 150
 source_dens_mult = 0.3
 current_t = 0.0
@@ -141,8 +145,7 @@ def set_p():
 @ti.kernel
 def add_source(x: int, y: int, vx: int, vy: int):
    # print("add source")
-   
-    print(current_t)
+
     r = int(N*source_r)
     ##mod_r = abs(p_noise_calc(x*perlin_freq,y*perlin_freq, x))
     
@@ -153,7 +156,7 @@ def add_source(x: int, y: int, vx: int, vy: int):
         if dist < r:
             falloff = 1.0 - dist / r
             w = falloff * falloff  # smooth falloff
-            vel_mult = abs((3 * p_noise_calc(i*perlin_freq,j*perlin_freq, i+j)))
+            vel_mult = abs((3 * p_noise_calc(i*perlin_freq,j*perlin_freq, i+j+substep_count)))
             vel = (ti.Vector([i,j]) - ti.Vector([x,y]))
             
             exp_w = ti.exp(-4*dist/r)
@@ -166,10 +169,10 @@ def add_source(x: int, y: int, vx: int, vy: int):
             rand = 0.1 + 0.3 * ti.random(ti.f32)
 
             # density[i, j] = clamp( (density[i,j] + (1-dist/r))*(1-dist/r),0.0,1.0)
-            density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult* rand
+            density[i, j] = density[i,j] + clamp(exp_w,0,1)*source_dens_mult * clamp(vel_mult/3,0.1,1)
 
-            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*vel_mult + vx*5
-            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*vel_mult + vy*5
+            u[i, j] =  u[i,j]*0.9 + ((vel[0])*N)*clamp(w,0,1)*vel_mult*2 + vx*5
+            v[i, j] =  v[i,j]*0.9 + ((vel[1])*N)*clamp(w,0,1)*vel_mult*2 + vy*5
 
             density_prev[i,j] = density[i,j]
             u_prev[i,j] = u[i,j]
@@ -264,7 +267,7 @@ def clamp_values(field: ti.template()):
 @ti.func
 def hash(x, y, rand):
     # deterministic hash
-    hash = x * 374761393 + y * 668265263 + int(current_t) + rand
+    hash = x * 374761393 + y * 668265263
     hash = (hash ^ (hash >> 13)) * 1274126177
     hash = hash ^ (hash >> 16)
     return hash
@@ -276,15 +279,17 @@ def fade(t):
 
 #gradient function
 @ti.func
-def gradient(ix, iy, rand):
-    h = hash(ix, iy, rand)
+def gradient(ix, iy, seed):
+    h = hash(ix, iy, seed)
     
     ##bit wise mask
     angle = (h & 0xffff) * (2 * 3.14159265 / 65536.0)
-    return ti.Vector([ti.cos(angle), ti.sin(angle)])
+    return ti.Vector([ti.cos(angle+ seed*pnoise_time_mult), ti.sin(angle+seed*pnoise_time_mult)])
 
 @ti.func
 def p_noise_calc(i, j, rand):
+
+
 
 
     ## calculate corners with boundary enforcement
@@ -533,8 +538,9 @@ def compute_curl():
 def calc_noise(t: ti.f32, freq: ti.f32, amp: ti.f32):
     for i, j in ti.ndrange((1,N-1),(1,N-1)):
         #scalar noise
-        noise_scalar[i, j] = amp * noise(i * freq, j * freq, t * 0.2, 0)
-
+        #noise_scalar[i, j] = amp * noise(i * freq, j * freq, t * 0.2, 0)
+        noise_scalar[i, j] = 3 * amp * p_noise_calc(i * freq, j * freq, int(t))
+        ##print(noise_scalar[i,j])
     #set boundary cells
     set_bnd(noise_scalar)
         
@@ -548,11 +554,14 @@ def apply_turbulence(strength: ti.f32, amp: ti.f32):
         vec = ti.Vector([delta_ny, -delta_nx])
         mag = vec.norm() + 1e-5
         curl_vector = (vec / mag) * amp
+        #print(curl_vector)
+        #print(u[i,j])
 
-        u[i,j] = u[i,j] + 10
-        v[i,j] = v[i,j] + 10
-        # u[i,j] = u[i,j] + curl_vector[0] * strength * dt
-        # v[i,j] = v[i,j] + curl_vector[1] * strength * dt
+        u[i,j] = u[i,j] + curl_vector[0] * strength
+        v[i,j] = v[i,j] + curl_vector[1] * strength
+
+        # u[i,j] = curl_vector[0] * strength
+        # v[i,j] = curl_vector[1] * strength
     set_vel_bnd(u, v)
 
 
@@ -583,7 +592,7 @@ def apply_turbulence(strength: ti.f32, amp: ti.f32):
 
 
 def substep():
-    global u, v, u_prev, v_prev, density, density_prev, current_t
+    global u, v, u_prev, v_prev, density, density_prev, current_t, substep_count
 
 
     ## GRAVITY
@@ -612,28 +621,32 @@ def substep():
    
         ##TURBLUENCE
     if turbulence : 
-        calc_noise(current_t, freq=0.1, amp=1.0)
-        apply_turbulence(strength=1.0, amp=0.3)
-        current_t = current_t + dt/substeps
+        
+        calc_noise(substep_count, freq=0.03, amp=1.0)
+        apply_turbulence(strength=10.0, amp=1)
         v_prev, v = v, v_prev
         u_prev, u = u, u_prev
 
+
     ## CURL
     compute_curl()
+    #v_prev, v = v, v_prev
+    #u_prev, u = u, u_prev
 
 
     
 
     ## PROJECT
     project()
-    if arrows:
-        vel_debug()
     v_prev, v = v, v_prev
     u_prev, u = u, u_prev
     density_prev, density = density, density_prev
 
+    if arrows:
+        vel_debug()
 
-
+    current_t = current_t + dt/substeps
+    substep_count = substep_count + 1
     ##ti.profiler.print_kernel_profiler_info()
 
 
@@ -673,10 +686,6 @@ copy_field(v_prev, v)
 ##Render loop
 while window.running:
 
-
-
-
-
     window.show()
     # reset every 1.5 seconds
     # if current_t > 2.5:
@@ -687,6 +696,7 @@ while window.running:
     # calculate all substeps and then update vertices
     for _ in range(substeps):
         substep()
+        
 
             ## CHECK FOR MOUSE CLICKS
     if window.is_pressed(ti.ui.LMB):
@@ -706,7 +716,7 @@ while window.running:
             # copy_field(u_prev, u)
             # copy_field(v_prev, v)
         else:
-            print("click detected")
+            print("adding source")
             add_source(x,y,0,0)
             # copy_field(density_prev, density)
             # copy_field(u_prev, u)

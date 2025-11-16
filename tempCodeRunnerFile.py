@@ -1,1 +1,2 @@
-True
+    if arrows:
+        vel_debug()
